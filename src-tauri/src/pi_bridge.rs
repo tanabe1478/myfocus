@@ -1,9 +1,35 @@
 use serde_json::json;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
+
+static SHELL_PATH: OnceLock<String> = OnceLock::new();
+
+/// Resolve the user's terminal PATH via an interactive login shell.
+/// Finder-launched GUI apps only get launchd's minimal PATH, which misses
+/// mise/nvm/Homebrew locations — so neither `pi` nor the `node` its shebang
+/// needs would be found. Passing the full shell PATH to the child fixes both,
+/// plus any commands pi's bash tool runs.
+fn login_shell_path() -> &'static str {
+    SHELL_PATH.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        std::process::Command::new(&shell)
+            .args(["-l", "-i", "-c", "echo \"__PATH__$PATH\""])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    // rc files may print extra lines; find our marker
+                    .find_map(|l| l.strip_prefix("__PATH__").map(str::to_string))
+            })
+            .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default())
+    })
+}
 
 /// Handle to a running `pi --mode rpc` subprocess.
 pub struct PiBridge {
@@ -38,6 +64,7 @@ impl PiBridge {
         }
 
         let mut child = Command::new("pi")
+            .env("PATH", login_shell_path())
             .args([
                 "--mode",
                 "rpc",

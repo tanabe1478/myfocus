@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AiMessage } from "../types";
 
 interface Props {
@@ -13,6 +14,33 @@ interface Props {
 }
 
 const FEED_LINE = /^FEED:\s*(https?:\/\/\S+)\s*$/;
+const URL_PATTERN = /https?:\/\/[^\s<>"')\]]+/g;
+
+/// テキスト中のURLを外部ブラウザで開くリンクに変換する
+function linkify(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(URL_PATTERN)) {
+    const url = m[0];
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    nodes.push(
+      <a
+        key={`${m.index}-${url}`}
+        href={url}
+        className="ai-link"
+        onClick={(e) => {
+          e.preventDefault();
+          openUrl(url);
+        }}
+      >
+        {url}
+      </a>
+    );
+    last = m.index + url.length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
 
 export function AiPanel({
   messages,
@@ -42,7 +70,15 @@ export function AiPanel({
     <aside className="ai-panel">
       <div className="pane-header">
         <span className="pane-title">✦ アシスタント</span>
-        <button className="icon-button" title="新しい会話" onClick={onReset}>
+        <button
+          className="icon-button"
+          title="会話をリセットして最初から"
+          onClick={() => {
+            if (messages.length === 0 || confirm("会話をリセットして最初から始めますか？")) {
+              onReset();
+            }
+          }}
+        >
           ⊕
         </button>
         <button className="icon-button" title="閉じる" onClick={onClose}>
@@ -74,12 +110,17 @@ export function AiPanel({
       <div className="ai-input-row">
         <textarea
           className="ai-input"
-          placeholder="AIに相談・記事を探してもらう…"
+          placeholder="AIに相談・記事を探してもらう…（⌘Enterで送信）"
           value={input}
           rows={2}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            // Enterは改行。⌘Enter / Shift+Enterで送信
+            if (
+              e.key === "Enter" &&
+              (e.metaKey || e.shiftKey) &&
+              !e.nativeEvent.isComposing
+            ) {
               e.preventDefault();
               submit();
             }
@@ -119,7 +160,7 @@ function MessageBubble({
             </div>
           );
         }
-        return <div key={i}>{line || " "}</div>;
+        return <div key={i}>{line ? linkify(line) : " "}</div>;
       })}
     </div>
   );
