@@ -3,7 +3,9 @@ export interface Feed {
   url: string;
   title: string;
   site_url: string | null;
+  category: string | null;
   last_fetched_at: number | null;
+  last_error: string | null;
   unread_count: number;
 }
 
@@ -26,7 +28,8 @@ export type Selection =
   | { kind: "all" }
   | { kind: "unread" }
   | { kind: "starred" }
-  | { kind: "feed"; feedId: number };
+  | { kind: "feed"; feedId: number }
+  | { kind: "category"; category: string };
 
 export interface AiMessage {
   role: "user" | "assistant";

@@ -1,5 +1,16 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Feed, Selection } from "../types";
+import { getSetting, setSetting } from "../api";
+
+const COLLAPSED_KEY = "myfocus.collapsedCategories";
+
+function loadCollapsed(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+}
 
 interface Props {
   feeds: Feed[];
@@ -29,7 +40,37 @@ export function Sidebar({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importNote, setImportNote] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const groups = useMemo(() => {
+    const uncategorized: Feed[] = [];
+    const byCategory = new Map<string, Feed[]>();
+    for (const f of feeds) {
+      if (f.category) {
+        const list = byCategory.get(f.category) ?? [];
+        list.push(f);
+        byCategory.set(f.category, list);
+      } else {
+        uncategorized.push(f);
+      }
+    }
+    return { uncategorized, byCategory };
+  }, [feeds]);
+
+  const toggleCollapse = (category: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  };
 
   const handleOpmlFile = async (file: File) => {
     try {
@@ -64,15 +105,26 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="sidebar-header">
         <span className="app-name">myfocus</span>
-        <button
-          className="icon-button"
-          title="すべて更新"
-          onClick={onRefresh}
-          disabled={refreshing}
-        >
-          {refreshing ? "…" : "⟳"}
-        </button>
+        <span>
+          <button
+            className="icon-button"
+            title="設定"
+            onClick={() => setSettingsOpen((v) => !v)}
+          >
+            ⚙
+          </button>
+          <button
+            className="icon-button"
+            title="すべて更新"
+            onClick={onRefresh}
+            disabled={refreshing}
+          >
+            {refreshing ? "…" : "⟳"}
+          </button>
+        </span>
       </div>
+
+      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
 
       <nav className="smart-list">
         <SidebarRow
@@ -141,20 +193,49 @@ export function Sidebar({
       )}
 
       <div className="feed-list">
-        {feeds.map((f) => (
-          <SidebarRow
-            key={f.id}
-            label={f.title || f.url}
-            count={f.unread_count}
-            selected={isSelected({ kind: "feed", feedId: f.id })}
-            onClick={() => onSelect({ kind: "feed", feedId: f.id })}
-            onRemove={() => {
-              if (confirm(`「${f.title}」の購読を解除しますか？記事も削除されます。`)) {
-                onRemoveFeed(f.id);
-              }
-            }}
-          />
+        {groups.uncategorized.map((f) => (
+          <FeedRow key={f.id} feed={f} isSelected={isSelected} onSelect={onSelect} onRemoveFeed={onRemoveFeed} />
         ))}
+        {[...groups.byCategory.entries()].map(([category, list]) => {
+          const isCollapsed = collapsed.has(category);
+          const unread = list.reduce((sum, f) => sum + f.unread_count, 0);
+          return (
+            <div key={category} className="feed-group">
+              <div
+                className={`sidebar-row category-row ${
+                  isSelected({ kind: "category", category }) ? "selected" : ""
+                }`}
+                onClick={() => onSelect({ kind: "category", category })}
+              >
+                <button
+                  className="icon-button category-toggle"
+                  title={isCollapsed ? "展開" : "折りたたむ"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleCollapse(category);
+                  }}
+                >
+                  {isCollapsed ? "▸" : "▾"}
+                </button>
+                <span className="sidebar-row-label" title={category}>
+                  {category}
+                </span>
+                {unread > 0 && <span className="unread-badge">{unread}</span>}
+              </div>
+              {!isCollapsed &&
+                list.map((f) => (
+                  <FeedRow
+                    key={f.id}
+                    feed={f}
+                    indent
+                    isSelected={isSelected}
+                    onSelect={onSelect}
+                    onRemoveFeed={onRemoveFeed}
+                  />
+                ))}
+            </div>
+          );
+        })}
         {feeds.length === 0 && (
           <div className="empty-hint">＋ からフィードを追加してください</div>
         )}
@@ -163,24 +244,111 @@ export function Sidebar({
   );
 }
 
+function SettingsPanel({ onClose }: { onClose: () => void }) {
+  const [days, setDays] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    getSetting("retention_days").then((v) => setDays(v ?? "90"));
+  }, []);
+
+  const save = async () => {
+    const n = parseInt(days, 10);
+    if (isNaN(n) || n < 0) {
+      setNote("0以上の日数を入力してください");
+      return;
+    }
+    await setSetting("retention_days", String(n));
+    setNote(n === 0 ? "自動削除を無効にしました" : `${n}日で保存しました`);
+    setTimeout(onClose, 1200);
+  };
+
+  return (
+    <div className="settings-panel">
+      <div className="settings-title">記事の保持期間</div>
+      <div className="settings-row">
+        <input
+          type="number"
+          min={0}
+          value={days}
+          onChange={(e) => setDays(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+            if (e.key === "Escape") onClose();
+          }}
+        />
+        <span>日</span>
+        <button className="settings-save" onClick={save}>
+          保存
+        </button>
+      </div>
+      <div className="settings-hint">
+        既読記事をこの日数の経過後に自動削除します。スター付きは削除されません。0で無効。
+      </div>
+      {note && <div className="add-feed-status">{note}</div>}
+    </div>
+  );
+}
+
+function FeedRow({
+  feed,
+  indent,
+  isSelected,
+  onSelect,
+  onRemoveFeed,
+}: {
+  feed: Feed;
+  indent?: boolean;
+  isSelected: (sel: Selection) => boolean;
+  onSelect: (sel: Selection) => void;
+  onRemoveFeed: (feedId: number) => void;
+}) {
+  return (
+    <div className={indent ? "feed-row-indent" : undefined}>
+      <SidebarRow
+        label={feed.title || feed.url}
+        count={feed.unread_count}
+        error={feed.last_error}
+        selected={isSelected({ kind: "feed", feedId: feed.id })}
+        onClick={() => onSelect({ kind: "feed", feedId: feed.id })}
+        onRemove={() => {
+          if (confirm(`「${feed.title}」の購読を解除しますか？記事も削除されます。`)) {
+            onRemoveFeed(feed.id);
+          }
+        }}
+      />
+    </div>
+  );
+}
+
 function SidebarRow({
   label,
   count,
+  error,
   selected,
   onClick,
   onRemove,
 }: {
   label: string;
   count?: number;
+  error?: string | null;
   selected: boolean;
   onClick: () => void;
   onRemove?: () => void;
 }) {
   return (
-    <div className={`sidebar-row ${selected ? "selected" : ""}`} onClick={onClick}>
+    <div
+      className={`sidebar-row ${selected ? "selected" : ""} ${error ? "has-error" : ""}`}
+      onClick={onClick}
+    >
       <span className="sidebar-row-label" title={label}>
         {label}
       </span>
+      {error && (
+        <span className="feed-error-badge" title={`取得エラー: ${error}`}>
+          ⚠
+        </span>
+      )}
       {onRemove && (
         <button
           className="icon-button row-remove"

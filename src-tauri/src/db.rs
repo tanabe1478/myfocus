@@ -8,7 +8,9 @@ pub struct Feed {
     pub url: String,
     pub title: String,
     pub site_url: Option<String>,
+    pub category: Option<String>,
     pub last_fetched_at: Option<i64>,
+    pub last_error: Option<String>,
     pub unread_count: i64,
 }
 
@@ -62,7 +64,103 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         CREATE INDEX IF NOT EXISTS idx_articles_read ON articles(read, published_at DESC);
         "#,
     )?;
+    for (column, ddl) in [
+        ("category", "ALTER TABLE feeds ADD COLUMN category TEXT"),
+        ("last_error", "ALTER TABLE feeds ADD COLUMN last_error TEXT"),
+    ] {
+        let exists = conn
+            .prepare("SELECT 1 FROM pragma_table_info('feeds') WHERE name = ?1")?
+            .exists([column])?;
+        if !exists {
+            conn.execute(ddl, [])?;
+        }
+    }
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        -- full-text index over article title/summary; trigram tokenizer for
+        -- substring matching that also works with Japanese text
+        CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
+            title, summary, feed_title,
+            tokenize = 'trigram'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS articles_fts_insert AFTER INSERT ON articles BEGIN
+            INSERT INTO articles_fts (rowid, title, summary, feed_title)
+            VALUES (
+                new.id, new.title, COALESCE(new.summary, ''),
+                COALESCE((SELECT title FROM feeds WHERE id = new.feed_id), '')
+            );
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS articles_fts_delete AFTER DELETE ON articles BEGIN
+            DELETE FROM articles_fts WHERE rowid = old.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS articles_fts_update
+        AFTER UPDATE OF title, summary ON articles BEGIN
+            DELETE FROM articles_fts WHERE rowid = old.id;
+            INSERT INTO articles_fts (rowid, title, summary, feed_title)
+            VALUES (
+                new.id, new.title, COALESCE(new.summary, ''),
+                COALESCE((SELECT title FROM feeds WHERE id = new.feed_id), '')
+            );
+        END;
+        "#,
+    )?;
+
+    // backfill the FTS index for articles inserted before it existed
+    conn.execute(
+        "INSERT INTO articles_fts (rowid, title, summary, feed_title)
+         SELECT a.id, a.title, COALESCE(a.summary, ''), f.title
+         FROM articles a JOIN feeds f ON f.id = a.feed_id
+         WHERE a.id NOT IN (SELECT rowid FROM articles_fts)",
+        [],
+    )?;
     Ok(conn)
+}
+
+pub fn get_setting(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e),
+        })
+}
+
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Delete read, unstarred articles older than the given number of days.
+/// Articles without a publish date are kept. Returns the number deleted.
+pub fn cleanup_old_articles(conn: &Connection, days: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM articles
+         WHERE read = 1 AND starred = 0
+           AND published_at IS NOT NULL
+           AND published_at < strftime('%s', 'now') - ?1 * 86400",
+        [days],
+    )
+}
+
+pub fn set_feed_error(conn: &Connection, feed_id: i64, error: Option<&str>) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE feeds SET last_error = ?1 WHERE id = ?2",
+        params![error, feed_id],
+    )?;
+    Ok(())
 }
 
 fn row_to_article(row: &rusqlite::Row) -> rusqlite::Result<Article> {
@@ -84,11 +182,15 @@ fn row_to_article(row: &rusqlite::Row) -> rusqlite::Result<Article> {
 
 const ARTICLE_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, a.content_html, a.published_at, a.read, a.starred";
 
+// list views skip content_html (it can be tens of KB per article); the reading
+// pane loads the full row via get_article
+const ARTICLE_LIST_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, NULL, a.published_at, a.read, a.starred";
+
 pub fn list_feeds(conn: &Connection) -> rusqlite::Result<Vec<Feed>> {
     let mut stmt = conn.prepare(
-        "SELECT f.id, f.url, f.title, f.site_url, f.last_fetched_at,
+        "SELECT f.id, f.url, f.title, f.site_url, f.category, f.last_fetched_at, f.last_error,
                 (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.read = 0)
-         FROM feeds f ORDER BY f.title COLLATE NOCASE",
+         FROM feeds f ORDER BY f.category COLLATE NOCASE, f.title COLLATE NOCASE",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(Feed {
@@ -96,8 +198,10 @@ pub fn list_feeds(conn: &Connection) -> rusqlite::Result<Vec<Feed>> {
             url: row.get(1)?,
             title: row.get(2)?,
             site_url: row.get(3)?,
-            last_fetched_at: row.get(4)?,
-            unread_count: row.get(5)?,
+            category: row.get(4)?,
+            last_fetched_at: row.get(5)?,
+            last_error: row.get(6)?,
+            unread_count: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -146,17 +250,21 @@ pub fn insert_articles(conn: &mut Connection, feed_id: i64, articles: &[NewArtic
 pub fn list_articles(
     conn: &Connection,
     feed_id: Option<i64>,
+    category: Option<&str>,
     unread_only: bool,
     starred_only: bool,
-    limit: i64,
 ) -> rusqlite::Result<Vec<Article>> {
     let mut sql = format!(
-        "SELECT {ARTICLE_COLS} FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE 1=1"
+        "SELECT {ARTICLE_LIST_COLS} FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE 1=1"
     );
     let mut p: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     if let Some(fid) = feed_id {
         sql.push_str(" AND a.feed_id = ?");
         p.push(Box::new(fid));
+    }
+    if let Some(cat) = category {
+        sql.push_str(" AND f.category = ?");
+        p.push(Box::new(cat.to_string()));
     }
     if unread_only {
         sql.push_str(" AND a.read = 0");
@@ -164,39 +272,67 @@ pub fn list_articles(
     if starred_only {
         sql.push_str(" AND a.starred = 1");
     }
-    sql.push_str(" ORDER BY a.published_at DESC, a.id DESC LIMIT ?");
-    p.push(Box::new(limit));
+    sql.push_str(" ORDER BY a.published_at DESC, a.id DESC");
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(p.iter().map(|b| b.as_ref())), row_to_article)?;
     rows.collect()
 }
 
-/// All articles' (id, searchable text) for the fuzzy index.
-pub fn search_corpus(conn: &Connection) -> rusqlite::Result<Vec<(i64, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT a.id, a.title || ' ' || COALESCE(a.summary, '') || ' ' || f.title
-         FROM articles a JOIN feeds f ON f.id = a.feed_id
-         ORDER BY a.published_at DESC LIMIT 20000",
-    )?;
-    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-    rows.collect()
+pub fn get_article(conn: &Connection, article_id: i64) -> rusqlite::Result<Article> {
+    let sql = format!(
+        "SELECT {ARTICLE_COLS} FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.id = ?1"
+    );
+    conn.query_row(&sql, [article_id], row_to_article)
 }
 
-pub fn articles_by_ids(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<Article>> {
-    if ids.is_empty() {
+/// Full-text search over title/summary/feed title.
+/// The trigram tokenizer needs 3+ character terms, so short queries (common in
+/// Japanese) fall back to plain substring matching.
+pub fn search_articles(conn: &Connection, query: &str, limit: i64) -> rusqlite::Result<Vec<Article>> {
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    if terms.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "SELECT {ARTICLE_COLS} FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.id IN ({placeholders})"
+
+    if terms.iter().all(|t| t.chars().count() >= 3) {
+        // quote each term so user input is treated literally, AND them together
+        let match_expr = terms
+            .iter()
+            .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let sql = format!(
+            "SELECT {ARTICLE_LIST_COLS}
+             FROM articles_fts fts
+             JOIN articles a ON a.id = fts.rowid
+             JOIN feeds f ON f.id = a.feed_id
+             WHERE articles_fts MATCH ?1
+             ORDER BY bm25(articles_fts), a.published_at DESC LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![match_expr, limit], row_to_article)?;
+        return rows.collect();
+    }
+
+    let mut sql = format!(
+        "SELECT {ARTICLE_LIST_COLS} FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE 1=1"
     );
+    let mut p: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    for t in &terms {
+        sql.push_str(
+            " AND (a.title LIKE ?1 ESCAPE '\\' OR COALESCE(a.summary,'') LIKE ?1 ESCAPE '\\' OR f.title LIKE ?1 ESCAPE '\\')"
+                .replace("?1", &format!("?{}", p.len() + 1))
+                .as_str(),
+        );
+        let escaped = t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        p.push(Box::new(format!("%{escaped}%")));
+    }
+    sql.push_str(&format!(" ORDER BY a.published_at DESC LIMIT ?{}", p.len() + 1));
+    p.push(Box::new(limit));
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), row_to_article)?;
-    let mut found: Vec<Article> = rows.collect::<Result<_, _>>()?;
-    // preserve ranking order given by ids
-    found.sort_by_key(|a| ids.iter().position(|&id| id == a.id).unwrap_or(usize::MAX));
-    Ok(found)
+    let rows = stmt.query_map(rusqlite::params_from_iter(p.iter().map(|b| b.as_ref())), row_to_article)?;
+    rows.collect()
 }
 
 pub fn set_read(conn: &Connection, article_id: i64, read: bool) -> rusqlite::Result<()> {
@@ -209,10 +345,21 @@ pub fn set_starred(conn: &Connection, article_id: i64, starred: bool) -> rusqlit
     Ok(())
 }
 
-pub fn mark_all_read(conn: &Connection, feed_id: Option<i64>) -> rusqlite::Result<()> {
-    match feed_id {
-        Some(fid) => conn.execute("UPDATE articles SET read = 1 WHERE feed_id = ?1", [fid])?,
-        None => conn.execute("UPDATE articles SET read = 1", [])?,
+pub fn mark_all_read(
+    conn: &Connection,
+    feed_id: Option<i64>,
+    category: Option<&str>,
+) -> rusqlite::Result<()> {
+    match (feed_id, category) {
+        (Some(fid), _) => {
+            conn.execute("UPDATE articles SET read = 1 WHERE feed_id = ?1", [fid])?
+        }
+        (None, Some(cat)) => conn.execute(
+            "UPDATE articles SET read = 1
+             WHERE feed_id IN (SELECT id FROM feeds WHERE category = ?1)",
+            [cat],
+        )?,
+        (None, None) => conn.execute("UPDATE articles SET read = 1", [])?,
     };
     Ok(())
 }
@@ -222,12 +369,24 @@ pub fn remove_feed(conn: &Connection, feed_id: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Register a feed without fetching it yet (OPML import). Keeps existing rows untouched.
-pub fn insert_feed_stub(conn: &Connection, url: &str, title: &str) -> rusqlite::Result<bool> {
+/// Register a feed without fetching it yet (OPML import).
+/// New feeds get the given category; existing ones have their category updated.
+pub fn insert_feed_stub(
+    conn: &Connection,
+    url: &str,
+    title: &str,
+    category: Option<&str>,
+) -> rusqlite::Result<bool> {
     let n = conn.execute(
-        "INSERT OR IGNORE INTO feeds (url, title) VALUES (?1, ?2)",
-        params![url, title],
+        "INSERT OR IGNORE INTO feeds (url, title, category) VALUES (?1, ?2, ?3)",
+        params![url, title, category],
     )?;
+    if n == 0 {
+        conn.execute(
+            "UPDATE feeds SET category = ?1 WHERE url = ?2",
+            params![category, url],
+        )?;
+    }
     Ok(n > 0)
 }
 

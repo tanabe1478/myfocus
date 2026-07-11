@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Article } from "../types";
 import { relativeTime } from "../format";
+import { openBackground } from "../api";
 
 interface Props {
   article: Article | null;
@@ -48,13 +49,22 @@ export function ReadingPane({ article, onToggleStar, onToggleRead, onAskAi }: Pr
           ✦
         </button>
         {article.url && (
-          <button
-            className="icon-button"
-            title="ブラウザで開く"
-            onClick={() => article.url && openUrl(article.url)}
-          >
-            ↗
-          </button>
+          <>
+            <button
+              className="icon-button"
+              title="ブラウザで開く"
+              onClick={() => article.url && openUrl(article.url)}
+            >
+              ↗
+            </button>
+            <button
+              className="icon-button"
+              title="バックグラウンドでブラウザで開く（b）"
+              onClick={() => article.url && openBackground(article.url)}
+            >
+              ⧉
+            </button>
+          </>
         )}
       </div>
       <article className="reading-body">

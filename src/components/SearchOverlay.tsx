@@ -58,7 +58,7 @@ export function SearchOverlay({ onClose, onSelect }: Props) {
         <input
           autoFocus
           className="search-input"
-          placeholder="あいまい検索（例: rust ui、tksr…）"
+          placeholder="全文検索（スペース区切りでAND検索）"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}

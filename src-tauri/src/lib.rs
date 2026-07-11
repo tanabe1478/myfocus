@@ -1,7 +1,6 @@
 mod db;
 mod fetcher;
 mod pi_bridge;
-mod search;
 
 use db::{Article, Feed};
 use pi_bridge::PiBridge;
@@ -37,19 +36,37 @@ fn list_feeds(state: State<AppState>) -> Result<Vec<Feed>, String> {
 fn list_articles(
     state: State<AppState>,
     feed_id: Option<i64>,
+    category: Option<String>,
     unread_only: bool,
     starred_only: bool,
 ) -> Result<Vec<Article>, String> {
     let conn = lock_db(&state)?;
-    db::list_articles(&conn, feed_id, unread_only, starred_only, 500).map_err(|e| e.to_string())
+    db::list_articles(&conn, feed_id, category.as_deref(), unread_only, starred_only)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_article(state: State<AppState>, article_id: i64) -> Result<Article, String> {
+    let conn = lock_db(&state)?;
+    db::get_article(&conn, article_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn fuzzy_search(state: State<AppState>, query: String) -> Result<Vec<Article>, String> {
     let conn = lock_db(&state)?;
-    let corpus = db::search_corpus(&conn).map_err(|e| e.to_string())?;
-    let ids = search::fuzzy_rank(&corpus, &query, 50);
-    db::articles_by_ids(&conn, &ids).map_err(|e| e.to_string())
+    db::search_articles(&conn, &query, 200).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_setting(state: State<AppState>, key: String) -> Result<Option<String>, String> {
+    let conn = lock_db(&state)?;
+    db::get_setting(&conn, &key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_setting(state: State<AppState>, key: String, value: String) -> Result<(), String> {
+    let conn = lock_db(&state)?;
+    db::set_setting(&conn, &key, &value).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -65,9 +82,13 @@ fn mark_starred(state: State<AppState>, article_id: i64, starred: bool) -> Resul
 }
 
 #[tauri::command]
-fn mark_all_read(state: State<AppState>, feed_id: Option<i64>) -> Result<(), String> {
+fn mark_all_read(
+    state: State<AppState>,
+    feed_id: Option<i64>,
+    category: Option<String>,
+) -> Result<(), String> {
     let conn = lock_db(&state)?;
-    db::mark_all_read(&conn, feed_id).map_err(|e| e.to_string())
+    db::mark_all_read(&conn, feed_id, category.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -179,11 +200,21 @@ async fn refresh_all_inner(app: &AppHandle) -> Result<RefreshResult, String> {
                     let mut conn = lock_db(&state)?;
                     let _ = db::upsert_feed(&conn, &url, &fetched.title, fetched.site_url.as_deref());
                     match db::insert_articles(&mut conn, feed_id, &fetched.articles) {
-                        Ok(n) => new_articles += n,
-                        Err(e) => failed.push(format!("{url}: {e}")),
+                        Ok(n) => {
+                            new_articles += n;
+                            let _ = db::set_feed_error(&conn, feed_id, None);
+                        }
+                        Err(e) => {
+                            let _ = db::set_feed_error(&conn, feed_id, Some(&e.to_string()));
+                            failed.push(format!("{url}: {e}"));
+                        }
                     }
                 }
-                Err(e) => failed.push(format!("{url}: {e}")),
+                Err(e) => {
+                    let conn = lock_db(&state)?;
+                    let _ = db::set_feed_error(&conn, feed_id, Some(&e));
+                    failed.push(format!("{url}: {e}"));
+                }
             }
         }
         // let the UI update progressively during large refreshes
@@ -207,31 +238,76 @@ fn xml_unescape(s: &str) -> String {
         .replace("&apos;", "'")
 }
 
-/// Import feeds from OPML text. Returns the number of newly registered feeds;
-/// fetching happens in the background afterwards.
+struct OpmlFeed {
+    url: String,
+    title: String,
+    category: Option<String>,
+}
+
+/// Parse OPML text into feeds, resolving each feed's innermost enclosing
+/// folder outline as its category.
+fn parse_opml(content: &str) -> Vec<OpmlFeed> {
+    let lower = content.to_lowercase();
+    let mut feeds = Vec::new();
+    // stack of open <outline> elements: folder outlines carry their name,
+    // feed outlines push an empty entry to keep the nesting balanced
+    let mut stack: Vec<String> = Vec::new();
+    let mut pos = 0;
+    loop {
+        let open = lower[pos..].find("<outline").map(|i| pos + i);
+        let close = lower[pos..].find("</outline").map(|i| pos + i);
+        match (open, close) {
+            (Some(o), c) if c.is_none_or(|c| o < c) => {
+                let Some(end) = lower[o..].find('>').map(|e| o + e) else { break };
+                let tag = &content[o..=end];
+                let self_closing = tag[..tag.len() - 1].trim_end().ends_with('/');
+                if let Some(xml_url) = extract_attr(tag, "xmlurl") {
+                    let title = extract_attr(tag, "title")
+                        .or_else(|| extract_attr(tag, "text"))
+                        .unwrap_or_else(|| xml_url.clone());
+                    feeds.push(OpmlFeed {
+                        url: xml_unescape(&xml_url),
+                        title: xml_unescape(&title),
+                        category: stack.iter().rev().find(|s| !s.is_empty()).cloned(),
+                    });
+                    if !self_closing {
+                        stack.push(String::new());
+                    }
+                } else if !self_closing {
+                    let name = extract_attr(tag, "title")
+                        .or_else(|| extract_attr(tag, "text"))
+                        .map(|s| xml_unescape(&s))
+                        .unwrap_or_default();
+                    stack.push(name);
+                }
+                pos = end + 1;
+            }
+            (_, Some(c)) => {
+                stack.pop();
+                pos = c + "</outline".len();
+            }
+            // (Some, None) は上のガードで必ず処理される
+            _ => break,
+        }
+    }
+    feeds
+}
+
+/// Import feeds from OPML text, preserving folder outlines as categories.
+/// Returns the number of newly registered feeds; fetching happens in the
+/// background afterwards.
 #[tauri::command]
 async fn import_opml(app: AppHandle, content: String) -> Result<usize, String> {
     let state = app.state::<AppState>();
     let mut added = 0;
     {
         let conn = lock_db(&state)?;
-        let lower = content.to_lowercase();
-        let mut pos = 0;
-        while let Some(start) = lower[pos..].find("<outline") {
-            let start = pos + start;
-            let Some(end) = lower[start..].find('>').map(|e| start + e) else { break };
-            let tag = &content[start..=end];
-            if let Some(xml_url) = extract_attr(tag, "xmlurl") {
-                let title = extract_attr(tag, "title")
-                    .or_else(|| extract_attr(tag, "text"))
-                    .unwrap_or_else(|| xml_url.clone());
-                let url = xml_unescape(&xml_url);
-                let title = xml_unescape(&title);
-                if db::insert_feed_stub(&conn, &url, &title).map_err(|e| e.to_string())? {
-                    added += 1;
-                }
+        for feed in parse_opml(&content) {
+            if db::insert_feed_stub(&conn, &feed.url, &feed.title, feed.category.as_deref())
+                .map_err(|e| e.to_string())?
+            {
+                added += 1;
             }
-            pos = end + 1;
         }
     }
     let _ = app.emit("feeds-updated", ());
@@ -241,6 +317,49 @@ async fn import_opml(app: AppHandle, content: String) -> Result<usize, String> {
         let _ = refresh_all_inner(&handle).await;
     });
     Ok(added)
+}
+
+/// Open a URL in the default browser while keeping the reader frontmost.
+/// `open -g` asks for no activation, but some browsers (Chrome etc.) activate
+/// themselves anyway — so we also grab the focus back right afterwards.
+#[tauri::command]
+async fn open_background(app: AppHandle, url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("http(s)のURLのみ開けます".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let win = app.get_webview_window("main");
+        // 呼び出し時点でこちらが前面だった場合のみフォーカス奪還の対象にする
+        let was_focused = win
+            .as_ref()
+            .and_then(|w| w.is_focused().ok())
+            .unwrap_or(false);
+
+        std::process::Command::new("open")
+            .args(["-g", &url])
+            .spawn()
+            .map_err(|e| format!("ブラウザで開けません: {e}"))?;
+
+        // Chromeはウィンドウ状態によって -g を無視して前面化することがある。
+        // フォーカスを失っていたら取り戻す（既に前面なら何もしない）
+        if was_focused {
+            for delay_ms in [200u64, 450, 900] {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                if let Some(win) = app.get_webview_window("main") {
+                    if !win.is_focused().unwrap_or(false) {
+                        let _ = win.set_focus();
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("この機能はmacOSのみ対応です".to_string())
+    }
 }
 
 #[tauri::command]
@@ -262,6 +381,21 @@ async fn ai_new_session(app: AppHandle) -> Result<(), String> {
 }
 
 const POLL_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const DEFAULT_RETENTION_DAYS: i64 = 90;
+
+/// Delete old read articles according to the retention setting (0 disables).
+fn run_cleanup(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let Ok(conn) = lock_db(&state) else { return };
+    let days = db::get_setting(&conn, "retention_days")
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_RETENTION_DAYS);
+    if days > 0 {
+        let _ = db::cleanup_old_articles(&conn, days);
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -286,6 +420,7 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
+                    run_cleanup(&handle);
                     let _ = refresh_all_inner(&handle).await;
                     tokio::time::sleep(POLL_INTERVAL).await;
                 }
@@ -295,7 +430,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_feeds,
             list_articles,
+            get_article,
             fuzzy_search,
+            get_setting,
+            set_setting,
             mark_read,
             mark_starred,
             mark_all_read,
@@ -303,10 +441,138 @@ pub fn run() {
             add_feed,
             refresh_all,
             import_opml,
+            open_background,
             ai_prompt,
             ai_abort,
             ai_new_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::db;
+    use super::parse_opml;
+
+    fn test_db() -> rusqlite::Connection {
+        let dir = std::env::temp_dir().join(format!("myfocus-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("t{:?}.db", std::thread::current().id()));
+        let _ = std::fs::remove_file(&path);
+        db::open(&path).unwrap()
+    }
+
+    fn seed_article(conn: &mut rusqlite::Connection, feed_id: i64, title: &str, age_days: i64) {
+        let ts = chrono::Utc::now().timestamp() - age_days * 86400;
+        db::insert_articles(
+            conn,
+            feed_id,
+            &[db::NewArticle {
+                guid: title.to_string(),
+                title: title.to_string(),
+                url: None,
+                author: None,
+                summary: Some(format!("{title} の要約テキスト")),
+                content_html: None,
+                published_at: Some(ts),
+            }],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fts_search_matches_japanese_and_short_queries() {
+        let mut conn = test_db();
+        let feed = db::upsert_feed(&conn, "https://x.example/feed", "テックブログ", None).unwrap();
+        seed_article(&mut conn, feed, "Rustの非同期ランタイム入門", 1);
+        seed_article(&mut conn, feed, "SwiftUIでアニメーション", 2);
+
+        // trigram FTS (3+ chars)
+        let hits = db::search_articles(&conn, "ランタイム", 50).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].title.contains("Rust"));
+
+        // short query falls back to LIKE
+        let hits = db::search_articles(&conn, "Sw", 50).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].title.contains("SwiftUI"));
+
+        // AND of terms
+        let hits = db::search_articles(&conn, "Rust 非同期", 50).unwrap();
+        assert_eq!(hits.len(), 1);
+        let hits = db::search_articles(&conn, "Rust アニメーション", 50).unwrap();
+        assert_eq!(hits.len(), 0);
+    }
+
+    #[test]
+    fn cleanup_keeps_unread_and_starred() {
+        let mut conn = test_db();
+        let feed = db::upsert_feed(&conn, "https://y.example/feed", "blog", None).unwrap();
+        seed_article(&mut conn, feed, "old-read", 100);
+        seed_article(&mut conn, feed, "old-starred", 100);
+        seed_article(&mut conn, feed, "old-unread", 100);
+        seed_article(&mut conn, feed, "new-read", 1);
+
+        let ids: Vec<(i64, String)> = conn
+            .prepare("SELECT id, title FROM articles")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for (id, title) in &ids {
+            if title != "old-unread" {
+                db::set_read(&conn, *id, true).unwrap();
+            }
+            if title == "old-starred" {
+                db::set_starred(&conn, *id, true).unwrap();
+            }
+        }
+
+        let deleted = db::cleanup_old_articles(&conn, 90).unwrap();
+        assert_eq!(deleted, 1); // only old-read
+
+        let remaining: Vec<String> = conn
+            .prepare("SELECT title FROM articles ORDER BY title")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(remaining, vec!["new-read", "old-starred", "old-unread"]);
+
+        // FTS index stays in sync via triggers
+        let hits = db::search_articles(&conn, "old-read", 50).unwrap();
+        assert_eq!(hits.len(), 0);
+    }
+
+    #[test]
+    fn parses_folders_as_categories() {
+        let opml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<opml version="1.0">
+  <body>
+    <outline text="Dev" title="Dev">
+      <outline text="Blog A" title="Blog A" type="rss" xmlUrl="https://a.example/feed" htmlUrl="https://a.example/"/>
+      <outline text="Blog &amp; B" title="Blog &amp; B" type="rss" xmlUrl="https://b.example/feed?a=1&amp;b=2"/>
+    </outline>
+    <outline text="Top" title="Top" type="rss" xmlUrl="https://top.example/feed"/>
+    <outline text="Outer" title="Outer">
+      <outline text="Inner" title="Inner">
+        <outline text="Nested" title="Nested" type="rss" xmlUrl="https://n.example/feed"/>
+      </outline>
+    </outline>
+  </body>
+</opml>"#;
+        let feeds = parse_opml(opml);
+        assert_eq!(feeds.len(), 4);
+        assert_eq!(feeds[0].title, "Blog A");
+        assert_eq!(feeds[0].category.as_deref(), Some("Dev"));
+        assert_eq!(feeds[1].title, "Blog & B");
+        assert_eq!(feeds[1].url, "https://b.example/feed?a=1&b=2");
+        assert_eq!(feeds[1].category.as_deref(), Some("Dev"));
+        assert_eq!(feeds[2].title, "Top");
+        assert_eq!(feeds[2].category, None);
+        assert_eq!(feeds[3].category.as_deref(), Some("Inner"));
+    }
 }

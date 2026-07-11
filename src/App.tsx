@@ -50,6 +50,13 @@ export default function App() {
 
   const selectArticle = useCallback((article: Article) => {
     setSelected(article);
+    // list rows omit content_html; load the full article for the reading pane
+    api
+      .getArticle(article.id)
+      .then((full) =>
+        setSelected((cur) => (cur?.id === article.id ? { ...full, read: true } : cur))
+      )
+      .catch(() => {});
     if (!article.read) {
       api.markRead(article.id, true);
       setArticles((list) =>
@@ -75,6 +82,15 @@ export default function App() {
       }
       const tag = (e.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "b") {
+        // 選択中の記事をバックグラウンドでブラウザに開く（アプリは最前面のまま）
+        e.preventDefault();
+        setSelected((cur) => {
+          if (cur?.url) api.openBackground(cur.url).catch(() => {});
+          return cur;
+        });
+        return;
+      }
       if (e.key === "j" || e.key === "k") {
         e.preventDefault();
         setSelected((cur) => {
@@ -123,7 +139,10 @@ export default function App() {
   }, []);
 
   const handleMarkAllRead = useCallback(async () => {
-    await api.markAllRead(selection.kind === "feed" ? selection.feedId : null);
+    await api.markAllRead(
+      selection.kind === "feed" ? selection.feedId : null,
+      selection.kind === "category" ? selection.category : null
+    );
     await reloadFeeds();
     await reloadArticles();
   }, [selection, reloadFeeds, reloadArticles]);
@@ -189,6 +208,8 @@ export default function App() {
         return "スター付き";
       case "feed":
         return feeds.find((f) => f.id === selection.feedId)?.title ?? "フィード";
+      case "category":
+        return selection.category;
     }
   }, [selection, feeds]);
 

@@ -186,6 +186,76 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
+.feed-error-badge {
+  font-size: 11px;
+  color: #d97706;
+  cursor: help;
+}
+
+.sidebar-row.has-error .row-remove {
+  display: block;
+}
+
+.settings-panel {
+  margin: 0 4px 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-reading);
+}
+
+.settings-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-row input {
+  width: 64px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-reading);
+  outline: none;
+}
+
+.settings-save {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-hover);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.settings-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.category-row {
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.category-toggle {
+  font-size: 10px;
+  padding: 0 2px;
+  color: var(--text-muted);
+}
+
+.feed-row-indent .sidebar-row {
+  padding-left: 24px;
+}
+
 .row-remove {
   display: none;
   font-size: 12px;
@@ -566,6 +636,8 @@ textarea {
   padding: 8px 12px;
   white-space: pre-wrap;
   word-wrap: break-word;
+  /* スクロール時にflexで潰されないようにする */
+  flex-shrink: 0;
 }
 
 .ai-message.user {
@@ -580,6 +652,13 @@ textarea {
   background: var(--bg-reading);
   border: 1px solid var(--border);
   align-self: stretch;
+}
+
+.ai-link {
+  color: var(--accent, #b3543f);
+  text-decoration: underline;
+  cursor: pointer;
+  word-break: break-all;
 }
 
 .ai-status {
