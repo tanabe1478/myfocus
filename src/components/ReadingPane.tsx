@@ -1,22 +1,18 @@
 import DOMPurify from "dompurify";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Article, Digest } from "../types";
+import type { Article } from "../types";
 import { relativeTime } from "../format";
-import { openBackground, summarizeComments } from "../api";
+import { openBackground } from "../api";
 
 interface Props {
   article: Article | null;
-  /** この記事の日本語ダイジェスト（無ければnull） */
-  digest: Digest | null;
-  /** この記事のダイジェストが現在バックグラウンド生成中 */
-  digestPending: boolean;
   onToggleStar: (article: Article) => void;
   onToggleRead: (article: Article) => void;
   onAskAi: (article: Article) => void;
 }
 
-export function ReadingPane({ article, digest, digestPending, onToggleStar, onToggleRead, onAskAi }: Props) {
+export function ReadingPane({ article, onToggleStar, onToggleRead, onAskAi }: Props) {
   const html = useMemo(() => {
     if (!article?.content_html) return null;
     return DOMPurify.sanitize(article.content_html, {
@@ -82,32 +78,8 @@ export function ReadingPane({ article, digest, digestPending, onToggleStar, onTo
           onClick={() => article.url && openUrl(article.url)}
           style={{ cursor: article.url ? "pointer" : "default" }}
         >
-          {digest?.title_ja || article.title || "(無題)"}
+          {article.title || "(無題)"}
         </h1>
-        {digest?.title_ja && digest.title_ja !== article.title && (
-          <div className="reading-original-title">{article.title}</div>
-        )}
-
-        {digest?.summary_ja ? (
-          <div className="digest-box">
-            <div className="digest-label">AIダイジェスト</div>
-            {digest.summary_ja.split("\n\n").map((p, i) => (
-              <p key={i}>{p}</p>
-            ))}
-          </div>
-        ) : digestPending ? (
-          <div className="digest-box digest-pending">
-            <div className="digest-label">AIダイジェスト</div>
-            <p>翻訳キューに入っています。本文を読んでダイジェストを生成します…</p>
-          </div>
-        ) : null}
-
-        <CommentsSummary
-          key={article.id}
-          article={article}
-          cached={digest?.comments_summary_ja ?? null}
-        />
-
         {html ? (
           <div
             className="reading-content"
@@ -128,77 +100,5 @@ export function ReadingPane({ article, digest, digestPending, onToggleStar, onTo
         )}
       </article>
     </section>
-  );
-}
-
-/// hackernews-ja風の「コメントの要約を表示」。初回クリックで生成し、以後はDBキャッシュ。
-function CommentsSummary({ article, cached }: { article: Article; cached: string | null }) {
-  const [summary, setSummary] = useState<string | null>(cached);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState(!!cached);
-
-  useEffect(() => {
-    setSummary(cached);
-    setOpen(!!cached);
-    setError(null);
-  }, [article.id, cached]);
-
-  if (!article.comments_url && !article.url) return null;
-
-  const load = async () => {
-    if (summary) {
-      setOpen((v) => !v);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await summarizeComments(article.id);
-      setSummary(result);
-      setOpen(true);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="comments-summary">
-      <button className="comments-summary-toggle" onClick={load} disabled={loading}>
-        {loading
-          ? "コメントを読んで要約しています…"
-          : summary
-            ? open
-              ? "コメントの要約を隠す"
-              : "コメントの要約を表示"
-            : "コメントの要約を生成"}
-      </button>
-      {error && <div className="add-feed-error">{error}</div>}
-      {open && summary && (
-        <div className="digest-box comments-box">
-          <div className="digest-label">
-            コメント要約
-            {article.comments_url && (
-              <a
-                href={article.comments_url}
-                onClick={(e) => {
-                  e.preventDefault();
-                  openUrl(article.comments_url!);
-                }}
-              >
-                スレッドを開く ↗
-              </a>
-            )}
-          </div>
-          {summary.split("\n").map((line, i) => (
-            <p key={i} className="comments-line">
-              {line}
-            </p>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }

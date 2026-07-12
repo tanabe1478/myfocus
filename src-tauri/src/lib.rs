@@ -1,7 +1,8 @@
 mod db;
-mod fetcher;
-mod pi_bridge;
 mod digest;
+mod fetcher;
+mod hn;
+mod pi_bridge;
 
 use db::{Article, Feed};
 use pi_bridge::PiBridge;
@@ -24,7 +25,10 @@ struct RefreshResult {
 }
 
 pub(crate) fn lock_db(state: &AppState) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
-    state.db.lock().map_err(|_| "DBロックに失敗しました".to_string())
+    state
+        .db
+        .lock()
+        .map_err(|_| "DBロックに失敗しました".to_string())
 }
 
 #[tauri::command]
@@ -42,8 +46,14 @@ fn list_articles(
     starred_only: bool,
 ) -> Result<Vec<Article>, String> {
     let conn = lock_db(&state)?;
-    db::list_articles(&conn, feed_id, category.as_deref(), unread_only, starred_only)
-        .map_err(|e| e.to_string())
+    db::list_articles(
+        &conn,
+        feed_id,
+        category.as_deref(),
+        unread_only,
+        starred_only,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -98,39 +108,27 @@ fn remove_feed(state: State<AppState>, feed_id: i64) -> Result<(), String> {
     db::remove_feed(&conn, feed_id).map_err(|e| e.to_string())
 }
 
-// --- 日本語ダイジェスト（RSSとは独立した付加機能; 実装は digest モジュール） ---
+// --- Hacker News（RSSとは独立した情報ソースモジュール） ---
 
 #[tauri::command]
-fn set_digest_rule(app: AppHandle, feed_id: i64, enabled: bool) -> Result<(), String> {
-    {
-        let state = app.state::<AppState>();
-        let conn = lock_db(&state)?;
-        digest::set_rule(&conn, feed_id, enabled).map_err(|e| e.to_string())?;
-    }
-    if enabled {
-        digest::kick(&app);
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn list_digest_rules(state: State<AppState>) -> Result<Vec<i64>, String> {
+fn hn_list(state: State<AppState>) -> Result<Vec<hn::HnItem>, String> {
     let conn = lock_db(&state)?;
-    digest::list_rules(&conn).map_err(|e| e.to_string())
+    hn::list(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn get_digests(
-    state: State<AppState>,
-    article_ids: Vec<i64>,
-) -> Result<std::collections::HashMap<i64, digest::Digest>, String> {
-    let conn = lock_db(&state)?;
-    digest::digests_for(&conn, &article_ids).map_err(|e| e.to_string())
+async fn hn_refresh(app: AppHandle) -> Result<usize, String> {
+    hn::refresh(&app).await
 }
 
 #[tauri::command]
-async fn summarize_comments(app: AppHandle, article_id: i64) -> Result<String, String> {
-    digest::summarize_comments(&app, article_id).await
+async fn hn_summarize_comments(app: AppHandle, item_id: i64) -> Result<String, String> {
+    hn::summarize_comments(&app, item_id).await
+}
+
+#[tauri::command]
+async fn list_pi_models() -> Result<Vec<String>, String> {
+    digest::list_models().await
 }
 
 /// Find a feed URL inside an HTML page (`<link rel="alternate" type="application/rss+xml">`).
@@ -143,7 +141,8 @@ fn discover_feed_url(html: &str, base: &str) -> Option<String> {
         let tag = &html[start..=end];
         let tag_lower = &lower[start..=end];
         if tag_lower.contains("alternate")
-            && (tag_lower.contains("application/rss+xml") || tag_lower.contains("application/atom+xml"))
+            && (tag_lower.contains("application/rss+xml")
+                || tag_lower.contains("application/atom+xml"))
         {
             if let Some(href) = extract_attr(tag, "href") {
                 if href.starts_with("http") {
@@ -183,7 +182,11 @@ async fn add_feed(app: AppHandle, url: String) -> Result<Feed, String> {
         Ok(f) => (url.clone(), f),
         Err(first_err) => {
             // maybe an HTML page — try feed autodiscovery
-            let res = client.get(&url).send().await.map_err(|_| first_err.clone())?;
+            let res = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|_| first_err.clone())?;
             let html = res.text().await.map_err(|_| first_err.clone())?;
             let discovered = discover_feed_url(&html, &url).ok_or(first_err)?;
             let fetched = fetcher::fetch_feed(&client, &discovered).await?;
@@ -194,8 +197,13 @@ async fn add_feed(app: AppHandle, url: String) -> Result<Feed, String> {
     let feed = {
         let state = app.state::<AppState>();
         let mut conn = lock_db(&state)?;
-        let feed_id = db::upsert_feed(&conn, &feed_url, &fetched.title, fetched.site_url.as_deref())
-            .map_err(|e| e.to_string())?;
+        let feed_id = db::upsert_feed(
+            &conn,
+            &feed_url,
+            &fetched.title,
+            fetched.site_url.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
         db::insert_articles(&mut conn, feed_id, &fetched.articles).map_err(|e| e.to_string())?;
         db::list_feeds(&conn)
             .map_err(|e| e.to_string())?
@@ -208,9 +216,6 @@ async fn add_feed(app: AppHandle, url: String) -> Result<Feed, String> {
 }
 
 async fn refresh_all_inner(app: &AppHandle) -> Result<RefreshResult, String> {
-    // start on any digest backlog immediately; new articles are picked up by
-    // the second kick after the refresh completes
-    digest::kick(app);
     let state = app.state::<AppState>();
     let client = state.client.clone();
     let feeds = {
@@ -233,11 +238,14 @@ async fn refresh_all_inner(app: &AppHandle) -> Result<RefreshResult, String> {
             });
         }
         while let Some(joined) = set.join_next().await {
-            let Ok((feed_id, url, result)) = joined else { continue };
+            let Ok((feed_id, url, result)) = joined else {
+                continue;
+            };
             match result {
                 Ok(fetched) => {
                     let mut conn = lock_db(&state)?;
-                    let _ = db::upsert_feed(&conn, &url, &fetched.title, fetched.site_url.as_deref());
+                    let _ =
+                        db::upsert_feed(&conn, &url, &fetched.title, fetched.site_url.as_deref());
                     match db::insert_articles(&mut conn, feed_id, &fetched.articles) {
                         Ok(n) => {
                             new_articles += n;
@@ -260,9 +268,10 @@ async fn refresh_all_inner(app: &AppHandle) -> Result<RefreshResult, String> {
         let _ = app.emit("feeds-updated", ());
     }
     let _ = app.emit("feeds-updated", ());
-    // digest any new articles on opted-in feeds
-    digest::kick(app);
-    Ok(RefreshResult { new_articles, failed })
+    Ok(RefreshResult {
+        new_articles,
+        failed,
+    })
 }
 
 #[tauri::command]
@@ -299,7 +308,9 @@ fn parse_opml(content: &str) -> Vec<OpmlFeed> {
         let close = lower[pos..].find("</outline").map(|i| pos + i);
         match (open, close) {
             (Some(o), c) if c.is_none_or(|c| o < c) => {
-                let Some(end) = lower[o..].find('>').map(|e| o + e) else { break };
+                let Some(end) = lower[o..].find('>').map(|e| o + e) else {
+                    break;
+                };
                 let tag = &content[o..=end];
                 let self_closing = tag[..tag.len() - 1].trim_end().ends_with('/');
                 if let Some(xml_url) = extract_attr(tag, "xmlurl") {
@@ -447,6 +458,7 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             let conn = db::open(&data_dir.join("myfocus.db"))?;
             digest::init(&conn)?;
+            hn::init(&conn)?;
 
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -463,6 +475,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 loop {
                     run_cleanup(&handle);
+                    let _ = hn::refresh(&handle).await;
                     let _ = refresh_all_inner(&handle).await;
                     tokio::time::sleep(POLL_INTERVAL).await;
                 }
@@ -480,10 +493,10 @@ pub fn run() {
             mark_starred,
             mark_all_read,
             remove_feed,
-            set_digest_rule,
-            list_digest_rules,
-            get_digests,
-            summarize_comments,
+            hn_list,
+            hn_refresh,
+            hn_summarize_comments,
+            list_pi_models,
             add_feed,
             refresh_all,
             import_opml,
@@ -522,7 +535,6 @@ mod tests {
                 summary: Some(format!("{title} の要約テキスト")),
                 content_html: None,
                 published_at: Some(ts),
-                comments_url: None,
             }],
         )
         .unwrap();

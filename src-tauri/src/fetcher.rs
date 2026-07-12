@@ -36,20 +36,10 @@ pub async fn fetch_feed(client: &reqwest::Client, url: &str) -> Result<FetchedFe
         .map(|e| {
             let link = e.links.first().map(|l| l.href.clone());
             let summary_html = e.summary.map(|s| s.content);
-            let content_html = e.content.and_then(|c| c.body).or_else(|| summary_html.clone());
-            // Atom threading extension (RFC 4685), or an HN item link embedded
-            // in the body (hnrss-style feeds)
-            let comments_url = e
-                .links
-                .iter()
-                .find(|l| l.rel.as_deref() == Some("replies"))
-                .map(|l| l.href.clone())
-                .or_else(|| {
-                    [summary_html.as_deref(), content_html.as_deref()]
-                        .into_iter()
-                        .flatten()
-                        .find_map(|html| extract_url(html, "https://news.ycombinator.com/item"))
-                });
+            let content_html = e
+                .content
+                .and_then(|c| c.body)
+                .or_else(|| summary_html.clone());
             NewArticle {
                 guid: e.id,
                 title: e.title.map(|t| t.content).unwrap_or_default(),
@@ -57,27 +47,16 @@ pub async fn fetch_feed(client: &reqwest::Client, url: &str) -> Result<FetchedFe
                 author: e.authors.first().map(|a| a.name.clone()),
                 summary: summary_html.map(|s| strip_html(&s, 500)),
                 content_html,
-                published_at: e
-                    .published
-                    .or(e.updated)
-                    .map(|d| d.timestamp()),
-                comments_url,
+                published_at: e.published.or(e.updated).map(|d| d.timestamp()),
             }
         })
         .collect();
 
-    Ok(FetchedFeed { title, site_url, articles })
-}
-
-/// Find the first URL starting with `prefix` inside HTML/text, ending at a
-/// quote, whitespace, or tag boundary.
-fn extract_url(text: &str, prefix: &str) -> Option<String> {
-    let start = text.find(prefix)?;
-    let rest = &text[start..];
-    let end = rest
-        .find(|c: char| c == '"' || c == '\'' || c == '<' || c.is_whitespace())
-        .unwrap_or(rest.len());
-    Some(rest[..end].replace("&amp;", "&"))
+    Ok(FetchedFeed {
+        title,
+        site_url,
+        articles,
+    })
 }
 
 /// Fetch a web page and reduce it to readable text for LLM summarization.

@@ -1,29 +1,17 @@
 import { useEffect, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { Article, Digest } from "../types";
+import type { Article } from "../types";
 import { relativeTime } from "../format";
 
 interface Props {
   articles: Article[];
   selectedId: number | null;
   title: string;
-  /** 記事IDごとの日本語ダイジェスト */
-  digests: Record<number, Digest>;
-  /** 日本語ダイジェストが有効なフィードのID集合 */
-  digestFeedIds: Set<number>;
   onSelect: (article: Article) => void;
   onMarkAllRead: () => void;
 }
 
-export function ArticleList({
-  articles,
-  selectedId,
-  title,
-  digests,
-  digestFeedIds,
-  onSelect,
-  onMarkAllRead,
-}: Props) {
+export function ArticleList({ articles, selectedId, title, onSelect, onMarkAllRead }: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -56,7 +44,6 @@ export function ArticleList({
         >
           {virtualizer.getVirtualItems().map((vi) => {
             const a = articles[vi.index];
-            const digest = digests[a.id];
             return (
               <div
                 key={a.id}
@@ -75,21 +62,13 @@ export function ArticleList({
                 <div className="article-row-top">
                   {!a.read && <span className="unread-dot" />}
                   <span className="article-row-feed">{a.feed_title}</span>
-                  {!digest?.title_ja && digestFeedIds.has(a.feed_id) && (
-                    <span className="translate-pending">翻訳待ち</span>
-                  )}
                   <span className="article-row-time">{relativeTime(a.published_at)}</span>
                 </div>
                 <div className="article-row-title">
                   {a.starred && <span className="star">★ </span>}
-                  {digest?.title_ja || a.title || "(無題)"}
+                  {a.title || "(無題)"}
                 </div>
-                {digest?.title_ja && digest.title_ja !== a.title && (
-                  <div className="article-row-original">{a.title}</div>
-                )}
-                {(digest?.summary_ja || a.summary) && (
-                  <div className="article-row-summary">{digest?.summary_ja ?? a.summary}</div>
-                )}
+                {a.summary && <div className="article-row-summary">{a.summary}</div>}
               </div>
             );
           })}

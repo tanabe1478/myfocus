@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Feed, Selection } from "../types";
-import { getSetting, setSetting } from "../api";
+import { getSetting, listPiModels, setSetting } from "../api";
 
 const COLLAPSED_KEY = "myfocus.collapsedCategories";
 
@@ -22,9 +22,6 @@ interface Props {
   onRemoveFeed: (feedId: number) => void;
   onRefresh: () => void;
   onImportOpml: (content: string) => Promise<number>;
-  digestFeedIds: Set<number>;
-  onToggleDigest: (feed: Feed) => void;
-  translating: { active: boolean; remaining: number };
 }
 
 export function Sidebar({
@@ -37,9 +34,6 @@ export function Sidebar({
   onRemoveFeed,
   onRefresh,
   onImportOpml,
-  digestFeedIds,
-  onToggleDigest,
-  translating,
 }: Props) {
   const [adding, setAdding] = useState(false);
   const [url, setUrl] = useState("");
@@ -151,6 +145,15 @@ export function Sidebar({
         />
       </nav>
 
+      <div className="section-label">ソース</div>
+      <nav className="smart-list">
+        <SidebarRow
+          label="Hacker News"
+          selected={isSelected({ kind: "hn" })}
+          onClick={() => onSelect({ kind: "hn" })}
+        />
+      </nav>
+
       <div className="section-label">
         フィード
         <span>
@@ -179,12 +182,6 @@ export function Sidebar({
         }}
       />
       {importNote && <div className="add-feed-status">{importNote}</div>}
-      {translating.active && (
-        <div className="translate-status" title="日本語ダイジェストを生成中">
-          <span className="translate-status-icon">あ</span>
-          翻訳中… 残り{translating.remaining}件
-        </div>
-      )}
 
       {adding && (
         <div className="add-feed">
@@ -212,8 +209,6 @@ export function Sidebar({
             isSelected={isSelected}
             onSelect={onSelect}
             onRemoveFeed={onRemoveFeed}
-            digestFeedIds={digestFeedIds}
-            onToggleDigest={onToggleDigest}
           />
         ))}
         {[...groups.byCategory.entries()].map(([category, list]) => {
@@ -251,9 +246,7 @@ export function Sidebar({
                     isSelected={isSelected}
                     onSelect={onSelect}
                     onRemoveFeed={onRemoveFeed}
-                    digestFeedIds={digestFeedIds}
-            onToggleDigest={onToggleDigest}
-                  />
+                          />
                 ))}
             </div>
           );
@@ -268,10 +261,14 @@ export function Sidebar({
 
 function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [days, setDays] = useState("");
+  const [model, setModel] = useState("");
+  const [models, setModels] = useState<string[]>([]);
   const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
     getSetting("retention_days").then((v) => setDays(v ?? "90"));
+    getSetting("translate_model").then((v) => setModel(v ?? ""));
+    listPiModels().then(setModels).catch(() => setModels([]));
   }, []);
 
   const save = async () => {
@@ -281,7 +278,8 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
       return;
     }
     await setSetting("retention_days", String(n));
-    setNote(n === 0 ? "自動削除を無効にしました" : `${n}日で保存しました`);
+    await setSetting("translate_model", model.trim());
+    setNote("保存しました");
     setTimeout(onClose, 1200);
   };
 
@@ -307,6 +305,31 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
       <div className="settings-hint">
         既読記事をこの日数の経過後に自動削除します。スター付きは削除されません。0で無効。
       </div>
+
+      <div className="settings-title" style={{ marginTop: 12 }}>翻訳・要約のモデル</div>
+      <div className="settings-row">
+        <select
+          className="settings-model-input"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+        >
+          <option value="">piのデフォルト</option>
+          {models.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+          {model && !models.includes(model) && (
+            <option value={model}>{model}</option>
+          )}
+        </select>
+        <button className="settings-save" onClick={save}>
+          保存
+        </button>
+      </div>
+      <div className="settings-hint">
+        Hacker Newsの翻訳・要約に使うモデル。翻訳は軽いタスクなので、安価・高速なモデルの指定を推奨。
+      </div>
       {note && <div className="add-feed-status">{note}</div>}
     </div>
   );
@@ -318,16 +341,12 @@ function FeedRow({
   isSelected,
   onSelect,
   onRemoveFeed,
-  digestFeedIds,
-  onToggleDigest,
 }: {
   feed: Feed;
   indent?: boolean;
   isSelected: (sel: Selection) => boolean;
   onSelect: (sel: Selection) => void;
   onRemoveFeed: (feedId: number) => void;
-  digestFeedIds: Set<number>;
-  onToggleDigest: (feed: Feed) => void;
 }) {
   return (
     <div className={indent ? "feed-row-indent" : undefined}>
@@ -336,9 +355,7 @@ function FeedRow({
         count={feed.unread_count}
         error={feed.last_error}
         selected={isSelected({ kind: "feed", feedId: feed.id })}
-        translateOn={digestFeedIds.has(feed.id)}
         onClick={() => onSelect({ kind: "feed", feedId: feed.id })}
-        onToggleTranslate={() => onToggleDigest(feed)}
         onRemove={() => {
           if (confirm(`「${feed.title}」の購読を解除しますか？記事も削除されます。`)) {
             onRemoveFeed(feed.id);
@@ -354,19 +371,15 @@ function SidebarRow({
   count,
   error,
   selected,
-  translateOn,
   onClick,
   onRemove,
-  onToggleTranslate,
 }: {
   label: string;
   count?: number;
   error?: string | null;
   selected: boolean;
-  translateOn?: boolean;
   onClick: () => void;
   onRemove?: () => void;
-  onToggleTranslate?: () => void;
 }) {
   return (
     <div
@@ -380,18 +393,6 @@ function SidebarRow({
         <span className="feed-error-badge" title={`取得エラー: ${error}`}>
           ⚠
         </span>
-      )}
-      {onToggleTranslate && (
-        <button
-          className={`icon-button row-translate ${translateOn ? "on" : ""}`}
-          title={translateOn ? "日本語ダイジェストをOFFにする" : "日本語ダイジェストをONにする（翻訳・要約）"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleTranslate();
-          }}
-        >
-          あ
-        </button>
       )}
       {onRemove && (
         <button

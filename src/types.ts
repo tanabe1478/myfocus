@@ -22,14 +22,25 @@ export interface Article {
   published_at: number | null;
   read: boolean;
   starred: boolean;
-  comments_url: string | null;
 }
 
-/** 記事に添付される日本語ダイジェスト（RSSとは独立した付加情報） */
+/** アイテムに添付される日本語ダイジェスト（翻訳エンジンの生成物） */
 export interface Digest {
   title_ja: string | null;
   summary_ja: string | null;
   comments_summary_ja: string | null;
+}
+
+/** Hacker Newsモジュールのアイテム */
+export interface HnItem {
+  id: number;
+  title: string;
+  url: string | null;
+  comments_url: string;
+  points: number;
+  comments_count: number;
+  rank: number;
+  digest: Digest | null;
 }
 
 export type Selection =
@@ -37,7 +48,8 @@ export type Selection =
   | { kind: "unread" }
   | { kind: "starred" }
   | { kind: "feed"; feedId: number }
-  | { kind: "category"; category: string };
+  | { kind: "category"; category: string }
+  | { kind: "hn" };
 
 export interface AiMessage {
   role: "user" | "assistant";

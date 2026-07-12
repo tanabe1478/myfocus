@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { Article, Digest, Feed, Selection } from "./types";
+import type { Article, Feed, Selection } from "./types";
 import * as api from "./api";
 import { htmlToText } from "./format";
 import { usePi } from "./usePi";
@@ -9,6 +9,7 @@ import { ArticleList } from "./components/ArticleList";
 import { ReadingPane } from "./components/ReadingPane";
 import { SearchOverlay } from "./components/SearchOverlay";
 import { AiPanel } from "./components/AiPanel";
+import { HackerNewsPane } from "./components/HackerNewsPane";
 import "./App.css";
 
 export default function App() {
@@ -19,11 +20,6 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
-  const [translating, setTranslating] = useState({ active: false, remaining: 0 });
-  // ダイジェスト（RSSとは独立した付加情報）: 対象フィードのルールと記事別ダイジェスト
-  const [digestFeedIds, setDigestFeedIds] = useState<Set<number>>(new Set());
-  const [digests, setDigests] = useState<Record<number, Digest>>({});
 
   // feeds-updated ハンドラから最新の選択記事を参照するための ref
   const selectedRef = useRef<Article | null>(null);
@@ -36,18 +32,9 @@ export default function App() {
   }, []);
 
   const reloadArticles = useCallback(async () => {
-    const list = await api.listArticles(selection);
-    setArticles(list);
-    setDigests(await api.getDigests(list.map((a) => a.id)));
+    if (selection.kind === "hn") return;
+    setArticles(await api.listArticles(selection));
   }, [selection]);
-
-  const reloadDigestRules = useCallback(async () => {
-    setDigestFeedIds(new Set(await api.listDigestRules()));
-  }, []);
-
-  useEffect(() => {
-    reloadDigestRules();
-  }, [reloadDigestRules]);
 
   useEffect(() => {
     reloadFeeds();
@@ -66,21 +53,6 @@ export default function App() {
       unlisten.then((f) => f());
     };
   }, [reloadFeeds, reloadArticles]);
-
-  useEffect(() => {
-    const unlisten = listen<string>("translate-error", (e) => {
-      setToast(`翻訳エラー: ${e.payload}`);
-      setTimeout(() => setToast(null), 8000);
-    });
-    const unlistenStatus = listen<{ active: boolean; remaining: number }>(
-      "translate-status",
-      (e) => setTranslating(e.payload)
-    );
-    return () => {
-      unlisten.then((f) => f());
-      unlistenStatus.then((f) => f());
-    };
-  }, []);
 
 
 
@@ -218,24 +190,6 @@ export default function App() {
     [pi.send]
   );
 
-  const handleToggleDigest = useCallback(
-    async (feed: Feed) => {
-      const next = !digestFeedIds.has(feed.id);
-      await api.setDigestRule(feed.id, next);
-      setDigestFeedIds((prev) => {
-        const s = new Set(prev);
-        if (next) s.add(feed.id);
-        else s.delete(feed.id);
-        return s;
-      });
-      if (next) {
-        // 本文取得中でステータスイベントが届く前から進行中表示にする
-        setTranslating((t) => (t.active ? t : { active: true, remaining: feed.unread_count }));
-      }
-    },
-    [digestFeedIds]
-  );
-
   const handleSubscribeSuggestion = useCallback(
     async (url: string) => {
       try {
@@ -264,6 +218,8 @@ export default function App() {
         return feeds.find((f) => f.id === selection.feedId)?.title ?? "フィード";
       case "category":
         return selection.category;
+      case "hn":
+        return "Hacker News";
     }
   }, [selection, feeds]);
 
@@ -279,29 +235,26 @@ export default function App() {
         onRemoveFeed={handleRemoveFeed}
         onRefresh={handleRefresh}
         onImportOpml={api.importOpml}
-        digestFeedIds={digestFeedIds}
-        onToggleDigest={handleToggleDigest}
-        translating={translating}
       />
-      <ArticleList
-        articles={articles}
-        selectedId={selected?.id ?? null}
-        title={listTitle}
-        digests={digests}
-        digestFeedIds={digestFeedIds}
-        onSelect={selectArticle}
-        onMarkAllRead={handleMarkAllRead}
-      />
-      <ReadingPane
-        article={selected}
-        digest={selected ? digests[selected.id] ?? null : null}
-        digestPending={
-          !!selected && !digests[selected.id] && digestFeedIds.has(selected.feed_id)
-        }
-        onToggleStar={toggleStar}
-        onToggleRead={toggleRead}
-        onAskAi={askAiAboutArticle}
-      />
+      {selection.kind === "hn" ? (
+        <HackerNewsPane />
+      ) : (
+        <>
+          <ArticleList
+            articles={articles}
+            selectedId={selected?.id ?? null}
+            title={listTitle}
+            onSelect={selectArticle}
+            onMarkAllRead={handleMarkAllRead}
+          />
+          <ReadingPane
+            article={selected}
+            onToggleStar={toggleStar}
+            onToggleRead={toggleRead}
+            onAskAi={askAiAboutArticle}
+          />
+        </>
+      )}
       {aiOpen ? (
         <AiPanel
           messages={pi.messages}
@@ -318,7 +271,6 @@ export default function App() {
           ✦
         </button>
       )}
-      {toast && <div className="toast">{toast}</div>}
       {searchOpen && (
         <SearchOverlay
           onClose={() => setSearchOpen(false)}

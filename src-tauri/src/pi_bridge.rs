@@ -49,12 +49,17 @@ const SYSTEM_PROMPT: &str = r#"あなたはRSSリーダー「myfocus」に組み
 
 impl PiBridge {
     pub fn new() -> Self {
-        Self { inner: Mutex::new(None) }
+        Self {
+            inner: Mutex::new(None),
+        }
     }
 
     /// Spawn pi if not running, wiring stdout/stderr to `pi-event` / `pi-error` events.
     /// Returns a clone of the stdin handle.
-    fn ensure_spawned(&self, app: &AppHandle) -> Result<Arc<tokio::sync::Mutex<ChildStdin>>, String> {
+    fn ensure_spawned(
+        &self,
+        app: &AppHandle,
+    ) -> Result<Arc<tokio::sync::Mutex<ChildStdin>>, String> {
         let mut guard = self.inner.lock().unwrap();
         if let Some(proc) = guard.as_mut() {
             if proc.child.try_wait().map(|s| s.is_none()).unwrap_or(false) {
@@ -103,7 +108,10 @@ impl PiBridge {
         });
 
         let stdin = Arc::new(tokio::sync::Mutex::new(stdin));
-        *guard = Some(PiProc { child, stdin: stdin.clone() });
+        *guard = Some(PiProc {
+            child,
+            stdin: stdin.clone(),
+        });
         Ok(stdin)
     }
 
@@ -111,13 +119,17 @@ impl PiBridge {
         let stdin = self.ensure_spawned(app)?;
         let mut stdin = stdin.lock().await;
         let line = format!("{}\n", value);
-        stdin.write_all(line.as_bytes()).await.map_err(|e| e.to_string())?;
+        stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         stdin.flush().await.map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub async fn prompt(&self, app: &AppHandle, message: &str) -> Result<(), String> {
-        self.write_line(app, json!({"type": "prompt", "message": message})).await
+        self.write_line(app, json!({"type": "prompt", "message": message}))
+            .await
     }
 
     pub async fn abort(&self, app: &AppHandle) -> Result<(), String> {
