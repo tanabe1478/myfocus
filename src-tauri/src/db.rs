@@ -11,7 +11,6 @@ pub struct Feed {
     pub category: Option<String>,
     pub last_fetched_at: Option<i64>,
     pub last_error: Option<String>,
-    pub translate: bool,
     pub unread_count: i64,
 }
 
@@ -29,10 +28,7 @@ pub struct Article {
     pub published_at: Option<i64>,
     pub read: bool,
     pub starred: bool,
-    pub title_ja: Option<String>,
-    pub summary_ja: Option<String>,
     pub comments_url: Option<String>,
-    pub comments_summary_ja: Option<String>,
 }
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -72,7 +68,6 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     for (column, ddl) in [
         ("category", "ALTER TABLE feeds ADD COLUMN category TEXT"),
         ("last_error", "ALTER TABLE feeds ADD COLUMN last_error TEXT"),
-        ("translate", "ALTER TABLE feeds ADD COLUMN translate INTEGER NOT NULL DEFAULT 0"),
     ] {
         let exists = conn
             .prepare("SELECT 1 FROM pragma_table_info('feeds') WHERE name = ?1")?
@@ -82,10 +77,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         }
     }
     for (column, ddl) in [
-        ("title_ja", "ALTER TABLE articles ADD COLUMN title_ja TEXT"),
-        ("summary_ja", "ALTER TABLE articles ADD COLUMN summary_ja TEXT"),
         ("comments_url", "ALTER TABLE articles ADD COLUMN comments_url TEXT"),
-        ("comments_summary_ja", "ALTER TABLE articles ADD COLUMN comments_summary_ja TEXT"),
     ] {
         let exists = conn
             .prepare("SELECT 1 FROM pragma_table_info('articles') WHERE name = ?1")?
@@ -196,21 +188,19 @@ fn row_to_article(row: &rusqlite::Row) -> rusqlite::Result<Article> {
         published_at: row.get(9)?,
         read: row.get::<_, i64>(10)? != 0,
         starred: row.get::<_, i64>(11)? != 0,
-        title_ja: row.get(12)?,
-        summary_ja: row.get(13)?,
-        comments_url: row.get(14)?,
-        comments_summary_ja: row.get(15)?,
+        comments_url: row.get(12)?,
     })
 }
 
-const ARTICLE_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, a.content_html, a.published_at, a.read, a.starred, a.title_ja, a.summary_ja, a.comments_url, a.comments_summary_ja";
+const ARTICLE_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, a.content_html, a.published_at, a.read, a.starred, a.comments_url";
 
-// list views skip content_html and the comments summary (loaded via get_article)
-const ARTICLE_LIST_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, NULL, a.published_at, a.read, a.starred, a.title_ja, a.summary_ja, a.comments_url, NULL";
+// list views skip content_html (it can be tens of KB per article); the reading
+// pane loads the full row via get_article
+const ARTICLE_LIST_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, NULL, a.published_at, a.read, a.starred, a.comments_url";
 
 pub fn list_feeds(conn: &Connection) -> rusqlite::Result<Vec<Feed>> {
     let mut stmt = conn.prepare(
-        "SELECT f.id, f.url, f.title, f.site_url, f.category, f.last_fetched_at, f.last_error, f.translate,
+        "SELECT f.id, f.url, f.title, f.site_url, f.category, f.last_fetched_at, f.last_error,
                 (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.read = 0)
          FROM feeds f ORDER BY f.category COLLATE NOCASE, f.title COLLATE NOCASE",
     )?;
@@ -223,8 +213,7 @@ pub fn list_feeds(conn: &Connection) -> rusqlite::Result<Vec<Feed>> {
             category: row.get(4)?,
             last_fetched_at: row.get(5)?,
             last_error: row.get(6)?,
-            translate: row.get::<_, i64>(7)? != 0,
-            unread_count: row.get(8)?,
+            unread_count: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -412,74 +401,6 @@ pub fn insert_feed_stub(
         )?;
     }
     Ok(n > 0)
-}
-
-pub fn set_feed_translate(conn: &Connection, feed_id: i64, translate: bool) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE feeds SET translate = ?1 WHERE id = ?2",
-        params![translate as i64, feed_id],
-    )?;
-    Ok(())
-}
-
-pub struct TranslateItem {
-    pub id: i64,
-    pub title: String,
-    pub url: Option<String>,
-    pub summary: Option<String>,
-}
-
-/// Newest untranslated articles belonging to translate-enabled feeds.
-pub fn untranslated_articles(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<TranslateItem>> {
-    let mut stmt = conn.prepare(
-        "SELECT a.id, a.title, a.url, a.summary
-         FROM articles a JOIN feeds f ON f.id = a.feed_id
-         WHERE f.translate = 1 AND a.title_ja IS NULL AND a.title != ''
-         ORDER BY a.published_at DESC, a.id DESC LIMIT ?1",
-    )?;
-    let rows = stmt.query_map([limit], |row| {
-        Ok(TranslateItem {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            url: row.get(2)?,
-            summary: row.get(3)?,
-        })
-    })?;
-    rows.collect()
-}
-
-pub fn count_untranslated(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM articles a JOIN feeds f ON f.id = a.feed_id
-         WHERE f.translate = 1 AND a.title_ja IS NULL AND a.title != ''",
-        [],
-        |r| r.get(0),
-    )
-}
-
-pub fn store_translation(
-    conn: &Connection,
-    article_id: i64,
-    title_ja: &str,
-    summary_ja: Option<&str>,
-) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE articles SET title_ja = ?1, summary_ja = ?2 WHERE id = ?3",
-        params![title_ja, summary_ja, article_id],
-    )?;
-    Ok(())
-}
-
-pub fn store_comments_summary(
-    conn: &Connection,
-    article_id: i64,
-    summary: &str,
-) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE articles SET comments_summary_ja = ?1 WHERE id = ?2",
-        params![summary, article_id],
-    )?;
-    Ok(())
 }
 
 pub fn feed_urls(conn: &Connection) -> rusqlite::Result<Vec<(i64, String)>> {

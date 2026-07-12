@@ -1,7 +1,7 @@
 mod db;
 mod fetcher;
 mod pi_bridge;
-mod translator;
+mod digest;
 
 use db::{Article, Feed};
 use pi_bridge::PiBridge;
@@ -98,55 +98,39 @@ fn remove_feed(state: State<AppState>, feed_id: i64) -> Result<(), String> {
     db::remove_feed(&conn, feed_id).map_err(|e| e.to_string())
 }
 
+// --- 日本語ダイジェスト（RSSとは独立した付加機能; 実装は digest モジュール） ---
+
 #[tauri::command]
-fn set_feed_translate(app: AppHandle, feed_id: i64, translate: bool) -> Result<(), String> {
+fn set_digest_rule(app: AppHandle, feed_id: i64, enabled: bool) -> Result<(), String> {
     {
         let state = app.state::<AppState>();
         let conn = lock_db(&state)?;
-        db::set_feed_translate(&conn, feed_id, translate).map_err(|e| e.to_string())?;
+        digest::set_rule(&conn, feed_id, enabled).map_err(|e| e.to_string())?;
     }
-    if translate {
-        translator::kick(&app);
+    if enabled {
+        digest::kick(&app);
     }
     Ok(())
 }
 
-/// Summarize the discussion at the article's comments URL (HN thread etc.) in
-/// Japanese. Cached per article; the first call generates it.
+#[tauri::command]
+fn list_digest_rules(state: State<AppState>) -> Result<Vec<i64>, String> {
+    let conn = lock_db(&state)?;
+    digest::list_rules(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_digests(
+    state: State<AppState>,
+    article_ids: Vec<i64>,
+) -> Result<std::collections::HashMap<i64, digest::Digest>, String> {
+    let conn = lock_db(&state)?;
+    digest::digests_for(&conn, &article_ids).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn summarize_comments(app: AppHandle, article_id: i64) -> Result<String, String> {
-    let (target, model, client) = {
-        let state = app.state::<AppState>();
-        let conn = lock_db(&state)?;
-        let article = db::get_article(&conn, article_id).map_err(|e| e.to_string())?;
-        if let Some(cached) = article.comments_summary_ja {
-            return Ok(cached);
-        }
-        let target = article
-            .comments_url
-            .or(article.url)
-            .ok_or("この記事にはコメントページのURLがありません")?;
-        let model = db::get_setting(&conn, "translate_model").ok().flatten();
-        (target, model, state.client.clone())
-    };
-
-    let text = fetcher::fetch_page_text(&client, &target, 12000).await?;
-    let prompt = format!(
-        "以下はある記事に対するコメントスレッド（またはコメントを含むページ）のテキストです。\
-         議論の主な論点、目立った意見、意見の対立があればその両論を、日本語で3〜6項目の箇条書きに要約してください。\
-         各項目は「- 」で始めること。前置きや締めの文は書かないこと。\
-         コメントが見つからない場合は「コメントはまだ無いようです。」とだけ返すこと。\n\n{text}"
-    );
-    let summary = translator::pi_print(&prompt, model.as_deref()).await?;
-    let summary = summary.trim().to_string();
-    if summary.is_empty() {
-        return Err("要約を生成できませんでした".to_string());
-    }
-
-    let state = app.state::<AppState>();
-    let conn = lock_db(&state)?;
-    db::store_comments_summary(&conn, article_id, &summary).map_err(|e| e.to_string())?;
-    Ok(summary)
+    digest::summarize_comments(&app, article_id).await
 }
 
 /// Find a feed URL inside an HTML page (`<link rel="alternate" type="application/rss+xml">`).
@@ -224,9 +208,9 @@ async fn add_feed(app: AppHandle, url: String) -> Result<Feed, String> {
 }
 
 async fn refresh_all_inner(app: &AppHandle) -> Result<RefreshResult, String> {
-    // start on any backlog immediately; new articles are picked up by the
-    // second kick after the refresh completes
-    translator::kick(app);
+    // start on any digest backlog immediately; new articles are picked up by
+    // the second kick after the refresh completes
+    digest::kick(app);
     let state = app.state::<AppState>();
     let client = state.client.clone();
     let feeds = {
@@ -276,8 +260,8 @@ async fn refresh_all_inner(app: &AppHandle) -> Result<RefreshResult, String> {
         let _ = app.emit("feeds-updated", ());
     }
     let _ = app.emit("feeds-updated", ());
-    // translate any new articles on translate-enabled feeds
-    translator::kick(app);
+    // digest any new articles on opted-in feeds
+    digest::kick(app);
     Ok(RefreshResult { new_articles, failed })
 }
 
@@ -462,6 +446,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let conn = db::open(&data_dir.join("myfocus.db"))?;
+            digest::init(&conn)?;
 
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -495,7 +480,9 @@ pub fn run() {
             mark_starred,
             mark_all_read,
             remove_feed,
-            set_feed_translate,
+            set_digest_rule,
+            list_digest_rules,
+            get_digests,
             summarize_comments,
             add_feed,
             refresh_all,

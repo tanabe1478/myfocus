@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { Article, Feed, Selection } from "./types";
+import type { Article, Digest, Feed, Selection } from "./types";
 import * as api from "./api";
 import { htmlToText } from "./format";
 import { usePi } from "./usePi";
@@ -21,6 +21,9 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [translating, setTranslating] = useState({ active: false, remaining: 0 });
+  // ダイジェスト（RSSとは独立した付加情報）: 対象フィードのルールと記事別ダイジェスト
+  const [digestFeedIds, setDigestFeedIds] = useState<Set<number>>(new Set());
+  const [digests, setDigests] = useState<Record<number, Digest>>({});
 
   // feeds-updated ハンドラから最新の選択記事を参照するための ref
   const selectedRef = useRef<Article | null>(null);
@@ -33,8 +36,18 @@ export default function App() {
   }, []);
 
   const reloadArticles = useCallback(async () => {
-    setArticles(await api.listArticles(selection));
+    const list = await api.listArticles(selection);
+    setArticles(list);
+    setDigests(await api.getDigests(list.map((a) => a.id)));
   }, [selection]);
+
+  const reloadDigestRules = useCallback(async () => {
+    setDigestFeedIds(new Set(await api.listDigestRules()));
+  }, []);
+
+  useEffect(() => {
+    reloadDigestRules();
+  }, [reloadDigestRules]);
 
   useEffect(() => {
     reloadFeeds();
@@ -48,18 +61,6 @@ export default function App() {
     const unlisten = listen("feeds-updated", () => {
       reloadFeeds();
       reloadArticles();
-      // 開いている記事に翻訳・要約が届いたら差し替える（既読/スターの楽観的更新は保持）
-      const cur = selectedRef.current;
-      if (cur) {
-        api
-          .getArticle(cur.id)
-          .then((full) =>
-            setSelected((c) =>
-              c?.id === cur.id ? { ...full, read: c.read, starred: c.starred } : c
-            )
-          )
-          .catch(() => {});
-      }
     });
     return () => {
       unlisten.then((f) => f());
@@ -81,10 +82,7 @@ export default function App() {
     };
   }, []);
 
-  const translateFeedIds = useMemo(
-    () => new Set(feeds.filter((f) => f.translate).map((f) => f.id)),
-    [feeds]
-  );
+
 
   const selectArticle = useCallback((article: Article) => {
     setSelected(article);
@@ -220,19 +218,22 @@ export default function App() {
     [pi.send]
   );
 
-  const handleToggleTranslate = useCallback(
+  const handleToggleDigest = useCallback(
     async (feed: Feed) => {
-      const next = !feed.translate;
-      await api.setFeedTranslate(feed.id, next);
-      setFeeds((list) =>
-        list.map((f) => (f.id === feed.id ? { ...f, translate: next } : f))
-      );
+      const next = !digestFeedIds.has(feed.id);
+      await api.setDigestRule(feed.id, next);
+      setDigestFeedIds((prev) => {
+        const s = new Set(prev);
+        if (next) s.add(feed.id);
+        else s.delete(feed.id);
+        return s;
+      });
       if (next) {
         // 本文取得中でステータスイベントが届く前から進行中表示にする
         setTranslating((t) => (t.active ? t : { active: true, remaining: feed.unread_count }));
       }
     },
-    []
+    [digestFeedIds]
   );
 
   const handleSubscribeSuggestion = useCallback(
@@ -278,24 +279,24 @@ export default function App() {
         onRemoveFeed={handleRemoveFeed}
         onRefresh={handleRefresh}
         onImportOpml={api.importOpml}
-        onToggleTranslate={handleToggleTranslate}
+        digestFeedIds={digestFeedIds}
+        onToggleDigest={handleToggleDigest}
         translating={translating}
       />
       <ArticleList
         articles={articles}
         selectedId={selected?.id ?? null}
         title={listTitle}
-        translatingFeedIds={translateFeedIds}
+        digests={digests}
+        digestFeedIds={digestFeedIds}
         onSelect={selectArticle}
         onMarkAllRead={handleMarkAllRead}
       />
       <ReadingPane
         article={selected}
+        digest={selected ? digests[selected.id] ?? null : null}
         digestPending={
-          !!selected &&
-          !selected.summary_ja &&
-          !selected.title_ja &&
-          translateFeedIds.has(selected.feed_id)
+          !!selected && !digests[selected.id] && digestFeedIds.has(selected.feed_id)
         }
         onToggleStar={toggleStar}
         onToggleRead={toggleRead}

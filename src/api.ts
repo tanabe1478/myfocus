@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Article, Feed, Selection } from "./types";
+import type { Article, Digest, Feed, Selection } from "./types";
 
 export const listFeeds = () => invoke<Feed[]>("list_feeds");
 
@@ -36,8 +36,13 @@ export const markStarred = (articleId: number, starred: boolean) =>
 export const markAllRead = (feedId: number | null, category: string | null = null) =>
   invoke<void>("mark_all_read", { feedId, category });
 
-export const setFeedTranslate = (feedId: number, translate: boolean) =>
-  invoke<void>("set_feed_translate", { feedId, translate });
+export const setDigestRule = (feedId: number, enabled: boolean) =>
+  invoke<void>("set_digest_rule", { feedId, enabled });
+
+export const listDigestRules = () => invoke<number[]>("list_digest_rules");
+
+export const getDigests = (articleIds: number[]) =>
+  invoke<Record<number, Digest>>("get_digests", { articleIds });
 
 export const summarizeComments = (articleId: number) =>
   invoke<string>("summarize_comments", { articleId });

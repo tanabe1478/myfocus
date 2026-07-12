@@ -1,12 +1,14 @@
 import DOMPurify from "dompurify";
 import { useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Article } from "../types";
+import type { Article, Digest } from "../types";
 import { relativeTime } from "../format";
 import { openBackground, summarizeComments } from "../api";
 
 interface Props {
   article: Article | null;
+  /** この記事の日本語ダイジェスト（無ければnull） */
+  digest: Digest | null;
   /** この記事のダイジェストが現在バックグラウンド生成中 */
   digestPending: boolean;
   onToggleStar: (article: Article) => void;
@@ -14,7 +16,7 @@ interface Props {
   onAskAi: (article: Article) => void;
 }
 
-export function ReadingPane({ article, digestPending, onToggleStar, onToggleRead, onAskAi }: Props) {
+export function ReadingPane({ article, digest, digestPending, onToggleStar, onToggleRead, onAskAi }: Props) {
   const html = useMemo(() => {
     if (!article?.content_html) return null;
     return DOMPurify.sanitize(article.content_html, {
@@ -80,16 +82,16 @@ export function ReadingPane({ article, digestPending, onToggleStar, onToggleRead
           onClick={() => article.url && openUrl(article.url)}
           style={{ cursor: article.url ? "pointer" : "default" }}
         >
-          {article.title_ja || article.title || "(無題)"}
+          {digest?.title_ja || article.title || "(無題)"}
         </h1>
-        {article.title_ja && article.title_ja !== article.title && (
+        {digest?.title_ja && digest.title_ja !== article.title && (
           <div className="reading-original-title">{article.title}</div>
         )}
 
-        {article.summary_ja ? (
+        {digest?.summary_ja ? (
           <div className="digest-box">
             <div className="digest-label">AIダイジェスト</div>
-            {article.summary_ja.split("\n\n").map((p, i) => (
+            {digest.summary_ja.split("\n\n").map((p, i) => (
               <p key={i}>{p}</p>
             ))}
           </div>
@@ -100,7 +102,11 @@ export function ReadingPane({ article, digestPending, onToggleStar, onToggleRead
           </div>
         ) : null}
 
-        <CommentsSummary key={article.id} article={article} />
+        <CommentsSummary
+          key={article.id}
+          article={article}
+          cached={digest?.comments_summary_ja ?? null}
+        />
 
         {html ? (
           <div
@@ -126,17 +132,17 @@ export function ReadingPane({ article, digestPending, onToggleStar, onToggleRead
 }
 
 /// hackernews-ja風の「コメントの要約を表示」。初回クリックで生成し、以後はDBキャッシュ。
-function CommentsSummary({ article }: { article: Article }) {
-  const [summary, setSummary] = useState<string | null>(article.comments_summary_ja);
+function CommentsSummary({ article, cached }: { article: Article; cached: string | null }) {
+  const [summary, setSummary] = useState<string | null>(cached);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState(!!article.comments_summary_ja);
+  const [open, setOpen] = useState(!!cached);
 
   useEffect(() => {
-    setSummary(article.comments_summary_ja);
-    setOpen(!!article.comments_summary_ja);
+    setSummary(cached);
+    setOpen(!!cached);
     setError(null);
-  }, [article.id]);
+  }, [article.id, cached]);
 
   if (!article.comments_url && !article.url) return null;
 

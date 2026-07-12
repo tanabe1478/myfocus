@@ -22,7 +22,8 @@ interface Props {
   onRemoveFeed: (feedId: number) => void;
   onRefresh: () => void;
   onImportOpml: (content: string) => Promise<number>;
-  onToggleTranslate: (feed: Feed) => void;
+  digestFeedIds: Set<number>;
+  onToggleDigest: (feed: Feed) => void;
   translating: { active: boolean; remaining: number };
 }
 
@@ -36,7 +37,8 @@ export function Sidebar({
   onRemoveFeed,
   onRefresh,
   onImportOpml,
-  onToggleTranslate,
+  digestFeedIds,
+  onToggleDigest,
   translating,
 }: Props) {
   const [adding, setAdding] = useState(false);
@@ -210,7 +212,8 @@ export function Sidebar({
             isSelected={isSelected}
             onSelect={onSelect}
             onRemoveFeed={onRemoveFeed}
-            onToggleTranslate={onToggleTranslate}
+            digestFeedIds={digestFeedIds}
+            onToggleDigest={onToggleDigest}
           />
         ))}
         {[...groups.byCategory.entries()].map(([category, list]) => {
@@ -248,7 +251,8 @@ export function Sidebar({
                     isSelected={isSelected}
                     onSelect={onSelect}
                     onRemoveFeed={onRemoveFeed}
-                    onToggleTranslate={onToggleTranslate}
+                    digestFeedIds={digestFeedIds}
+            onToggleDigest={onToggleDigest}
                   />
                 ))}
             </div>
@@ -314,14 +318,16 @@ function FeedRow({
   isSelected,
   onSelect,
   onRemoveFeed,
-  onToggleTranslate,
+  digestFeedIds,
+  onToggleDigest,
 }: {
   feed: Feed;
   indent?: boolean;
   isSelected: (sel: Selection) => boolean;
   onSelect: (sel: Selection) => void;
   onRemoveFeed: (feedId: number) => void;
-  onToggleTranslate: (feed: Feed) => void;
+  digestFeedIds: Set<number>;
+  onToggleDigest: (feed: Feed) => void;
 }) {
   return (
     <div className={indent ? "feed-row-indent" : undefined}>
@@ -330,9 +336,9 @@ function FeedRow({
         count={feed.unread_count}
         error={feed.last_error}
         selected={isSelected({ kind: "feed", feedId: feed.id })}
-        translateOn={feed.translate}
+        translateOn={digestFeedIds.has(feed.id)}
         onClick={() => onSelect({ kind: "feed", feedId: feed.id })}
-        onToggleTranslate={() => onToggleTranslate(feed)}
+        onToggleTranslate={() => onToggleDigest(feed)}
         onRemove={() => {
           if (confirm(`「${feed.title}」の購読を解除しますか？記事も削除されます。`)) {
             onRemoveFeed(feed.id);

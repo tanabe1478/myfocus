@@ -6,7 +6,6 @@ export interface Feed {
   category: string | null;
   last_fetched_at: number | null;
   last_error: string | null;
-  translate: boolean;
   unread_count: number;
 }
 
@@ -23,9 +22,13 @@ export interface Article {
   published_at: number | null;
   read: boolean;
   starred: boolean;
+  comments_url: string | null;
+}
+
+/** 記事に添付される日本語ダイジェスト（RSSとは独立した付加情報） */
+export interface Digest {
   title_ja: string | null;
   summary_ja: string | null;
-  comments_url: string | null;
   comments_summary_ja: string | null;
 }
 
