@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { Article, Feed, Selection } from "./types";
 import * as api from "./api";
@@ -19,6 +19,12 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [translating, setTranslating] = useState({ active: false, remaining: 0 });
+
+  // feeds-updated ハンドラから最新の選択記事を参照するための ref
+  const selectedRef = useRef<Article | null>(null);
+  selectedRef.current = selected;
 
   const pi = usePi();
 
@@ -42,11 +48,43 @@ export default function App() {
     const unlisten = listen("feeds-updated", () => {
       reloadFeeds();
       reloadArticles();
+      // 開いている記事に翻訳・要約が届いたら差し替える（既読/スターの楽観的更新は保持）
+      const cur = selectedRef.current;
+      if (cur) {
+        api
+          .getArticle(cur.id)
+          .then((full) =>
+            setSelected((c) =>
+              c?.id === cur.id ? { ...full, read: c.read, starred: c.starred } : c
+            )
+          )
+          .catch(() => {});
+      }
     });
     return () => {
       unlisten.then((f) => f());
     };
   }, [reloadFeeds, reloadArticles]);
+
+  useEffect(() => {
+    const unlisten = listen<string>("translate-error", (e) => {
+      setToast(`翻訳エラー: ${e.payload}`);
+      setTimeout(() => setToast(null), 8000);
+    });
+    const unlistenStatus = listen<{ active: boolean; remaining: number }>(
+      "translate-status",
+      (e) => setTranslating(e.payload)
+    );
+    return () => {
+      unlisten.then((f) => f());
+      unlistenStatus.then((f) => f());
+    };
+  }, []);
+
+  const translateFeedIds = useMemo(
+    () => new Set(feeds.filter((f) => f.translate).map((f) => f.id)),
+    [feeds]
+  );
 
   const selectArticle = useCallback((article: Article) => {
     setSelected(article);
@@ -182,6 +220,21 @@ export default function App() {
     [pi.send]
   );
 
+  const handleToggleTranslate = useCallback(
+    async (feed: Feed) => {
+      const next = !feed.translate;
+      await api.setFeedTranslate(feed.id, next);
+      setFeeds((list) =>
+        list.map((f) => (f.id === feed.id ? { ...f, translate: next } : f))
+      );
+      if (next) {
+        // 本文取得中でステータスイベントが届く前から進行中表示にする
+        setTranslating((t) => (t.active ? t : { active: true, remaining: feed.unread_count }));
+      }
+    },
+    []
+  );
+
   const handleSubscribeSuggestion = useCallback(
     async (url: string) => {
       try {
@@ -225,16 +278,25 @@ export default function App() {
         onRemoveFeed={handleRemoveFeed}
         onRefresh={handleRefresh}
         onImportOpml={api.importOpml}
+        onToggleTranslate={handleToggleTranslate}
+        translating={translating}
       />
       <ArticleList
         articles={articles}
         selectedId={selected?.id ?? null}
         title={listTitle}
+        translatingFeedIds={translateFeedIds}
         onSelect={selectArticle}
         onMarkAllRead={handleMarkAllRead}
       />
       <ReadingPane
         article={selected}
+        digestPending={
+          !!selected &&
+          !selected.summary_ja &&
+          !selected.title_ja &&
+          translateFeedIds.has(selected.feed_id)
+        }
         onToggleStar={toggleStar}
         onToggleRead={toggleRead}
         onAskAi={askAiAboutArticle}
@@ -255,6 +317,7 @@ export default function App() {
           ✦
         </button>
       )}
+      {toast && <div className="toast">{toast}</div>}
       {searchOpen && (
         <SearchOverlay
           onClose={() => setSearchOpen(false)}

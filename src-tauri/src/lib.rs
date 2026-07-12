@@ -1,6 +1,7 @@
 mod db;
 mod fetcher;
 mod pi_bridge;
+mod translator;
 
 use db::{Article, Feed};
 use pi_bridge::PiBridge;
@@ -10,9 +11,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-struct AppState {
-    db: Mutex<Connection>,
-    client: reqwest::Client,
+pub(crate) struct AppState {
+    pub(crate) db: Mutex<Connection>,
+    pub(crate) client: reqwest::Client,
     pi: PiBridge,
 }
 
@@ -22,7 +23,7 @@ struct RefreshResult {
     failed: Vec<String>,
 }
 
-fn lock_db(state: &AppState) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+pub(crate) fn lock_db(state: &AppState) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
     state.db.lock().map_err(|_| "DBロックに失敗しました".to_string())
 }
 
@@ -95,6 +96,57 @@ fn mark_all_read(
 fn remove_feed(state: State<AppState>, feed_id: i64) -> Result<(), String> {
     let conn = lock_db(&state)?;
     db::remove_feed(&conn, feed_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_feed_translate(app: AppHandle, feed_id: i64, translate: bool) -> Result<(), String> {
+    {
+        let state = app.state::<AppState>();
+        let conn = lock_db(&state)?;
+        db::set_feed_translate(&conn, feed_id, translate).map_err(|e| e.to_string())?;
+    }
+    if translate {
+        translator::kick(&app);
+    }
+    Ok(())
+}
+
+/// Summarize the discussion at the article's comments URL (HN thread etc.) in
+/// Japanese. Cached per article; the first call generates it.
+#[tauri::command]
+async fn summarize_comments(app: AppHandle, article_id: i64) -> Result<String, String> {
+    let (target, model, client) = {
+        let state = app.state::<AppState>();
+        let conn = lock_db(&state)?;
+        let article = db::get_article(&conn, article_id).map_err(|e| e.to_string())?;
+        if let Some(cached) = article.comments_summary_ja {
+            return Ok(cached);
+        }
+        let target = article
+            .comments_url
+            .or(article.url)
+            .ok_or("この記事にはコメントページのURLがありません")?;
+        let model = db::get_setting(&conn, "translate_model").ok().flatten();
+        (target, model, state.client.clone())
+    };
+
+    let text = fetcher::fetch_page_text(&client, &target, 12000).await?;
+    let prompt = format!(
+        "以下はある記事に対するコメントスレッド（またはコメントを含むページ）のテキストです。\
+         議論の主な論点、目立った意見、意見の対立があればその両論を、日本語で3〜6項目の箇条書きに要約してください。\
+         各項目は「- 」で始めること。前置きや締めの文は書かないこと。\
+         コメントが見つからない場合は「コメントはまだ無いようです。」とだけ返すこと。\n\n{text}"
+    );
+    let summary = translator::pi_print(&prompt, model.as_deref()).await?;
+    let summary = summary.trim().to_string();
+    if summary.is_empty() {
+        return Err("要約を生成できませんでした".to_string());
+    }
+
+    let state = app.state::<AppState>();
+    let conn = lock_db(&state)?;
+    db::store_comments_summary(&conn, article_id, &summary).map_err(|e| e.to_string())?;
+    Ok(summary)
 }
 
 /// Find a feed URL inside an HTML page (`<link rel="alternate" type="application/rss+xml">`).
@@ -172,6 +224,9 @@ async fn add_feed(app: AppHandle, url: String) -> Result<Feed, String> {
 }
 
 async fn refresh_all_inner(app: &AppHandle) -> Result<RefreshResult, String> {
+    // start on any backlog immediately; new articles are picked up by the
+    // second kick after the refresh completes
+    translator::kick(app);
     let state = app.state::<AppState>();
     let client = state.client.clone();
     let feeds = {
@@ -221,6 +276,8 @@ async fn refresh_all_inner(app: &AppHandle) -> Result<RefreshResult, String> {
         let _ = app.emit("feeds-updated", ());
     }
     let _ = app.emit("feeds-updated", ());
+    // translate any new articles on translate-enabled feeds
+    translator::kick(app);
     Ok(RefreshResult { new_articles, failed })
 }
 
@@ -438,6 +495,8 @@ pub fn run() {
             mark_starred,
             mark_all_read,
             remove_feed,
+            set_feed_translate,
+            summarize_comments,
             add_feed,
             refresh_all,
             import_opml,
@@ -476,6 +535,7 @@ mod tests {
                 summary: Some(format!("{title} の要約テキスト")),
                 content_html: None,
                 published_at: Some(ts),
+                comments_url: None,
             }],
         )
         .unwrap();

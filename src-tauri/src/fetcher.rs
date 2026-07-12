@@ -37,6 +37,19 @@ pub async fn fetch_feed(client: &reqwest::Client, url: &str) -> Result<FetchedFe
             let link = e.links.first().map(|l| l.href.clone());
             let summary_html = e.summary.map(|s| s.content);
             let content_html = e.content.and_then(|c| c.body).or_else(|| summary_html.clone());
+            // Atom threading extension (RFC 4685), or an HN item link embedded
+            // in the body (hnrss-style feeds)
+            let comments_url = e
+                .links
+                .iter()
+                .find(|l| l.rel.as_deref() == Some("replies"))
+                .map(|l| l.href.clone())
+                .or_else(|| {
+                    [summary_html.as_deref(), content_html.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .find_map(|html| extract_url(html, "https://news.ycombinator.com/item"))
+                });
             NewArticle {
                 guid: e.id,
                 title: e.title.map(|t| t.content).unwrap_or_default(),
@@ -48,11 +61,66 @@ pub async fn fetch_feed(client: &reqwest::Client, url: &str) -> Result<FetchedFe
                     .published
                     .or(e.updated)
                     .map(|d| d.timestamp()),
+                comments_url,
             }
         })
         .collect();
 
     Ok(FetchedFeed { title, site_url, articles })
+}
+
+/// Find the first URL starting with `prefix` inside HTML/text, ending at a
+/// quote, whitespace, or tag boundary.
+fn extract_url(text: &str, prefix: &str) -> Option<String> {
+    let start = text.find(prefix)?;
+    let rest = &text[start..];
+    let end = rest
+        .find(|c: char| c == '"' || c == '\'' || c == '<' || c.is_whitespace())
+        .unwrap_or(rest.len());
+    Some(rest[..end].replace("&amp;", "&"))
+}
+
+/// Fetch a web page and reduce it to readable text for LLM summarization.
+pub async fn fetch_page_text(
+    client: &reqwest::Client,
+    url: &str,
+    max_chars: usize,
+) -> Result<String, String> {
+    let res = client
+        .get(url)
+        .header("User-Agent", "myfocus/0.1 (+https://github.com/tanabe1478)")
+        .send()
+        .await
+        .map_err(|e| format!("ページを取得できません: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("HTTP {} が返されました", res.status()));
+    }
+    let html = res.text().await.map_err(|e| e.to_string())?;
+    let html = remove_blocks(&html, "script");
+    let html = remove_blocks(&html, "style");
+    let text = strip_html(&html, max_chars);
+    if text.trim().is_empty() {
+        return Err("本文テキストを抽出できませんでした".to_string());
+    }
+    Ok(text)
+}
+
+/// Remove `<tag ...>...</tag>` blocks (case-insensitive), e.g. script/style.
+fn remove_blocks(html: &str, tag: &str) -> String {
+    let lower = html.to_lowercase();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut out = String::with_capacity(html.len());
+    let mut pos = 0;
+    while let Some(start) = lower[pos..].find(&open).map(|i| pos + i) {
+        out.push_str(&html[pos..start]);
+        match lower[start..].find(&close) {
+            Some(end) => pos = start + end + close.len(),
+            None => return out, // unclosed block: drop the rest
+        }
+    }
+    out.push_str(&html[pos..]);
+    out
 }
 
 /// Crude tag stripper for list summaries; full content is rendered (sanitized) in the frontend.

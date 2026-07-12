@@ -12,7 +12,7 @@ static SHELL_PATH: OnceLock<String> = OnceLock::new();
 /// mise/nvm/Homebrew locations — so neither `pi` nor the `node` its shebang
 /// needs would be found. Passing the full shell PATH to the child fixes both,
 /// plus any commands pi's bash tool runs.
-fn login_shell_path() -> &'static str {
+pub fn login_shell_path() -> &'static str {
     SHELL_PATH.get_or_init(|| {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         std::process::Command::new(&shell)

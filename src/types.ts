@@ -6,6 +6,7 @@ export interface Feed {
   category: string | null;
   last_fetched_at: number | null;
   last_error: string | null;
+  translate: boolean;
   unread_count: number;
 }
 
@@ -22,6 +23,10 @@ export interface Article {
   published_at: number | null;
   read: boolean;
   starred: boolean;
+  title_ja: string | null;
+  summary_ja: string | null;
+  comments_url: string | null;
+  comments_summary_ja: string | null;
 }
 
 export type Selection =

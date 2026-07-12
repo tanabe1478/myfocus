@@ -36,6 +36,12 @@ export const markStarred = (articleId: number, starred: boolean) =>
 export const markAllRead = (feedId: number | null, category: string | null = null) =>
   invoke<void>("mark_all_read", { feedId, category });
 
+export const setFeedTranslate = (feedId: number, translate: boolean) =>
+  invoke<void>("set_feed_translate", { feedId, translate });
+
+export const summarizeComments = (articleId: number) =>
+  invoke<string>("summarize_comments", { articleId });
+
 export const importOpml = (content: string) =>
   invoke<number>("import_opml", { content });
 
