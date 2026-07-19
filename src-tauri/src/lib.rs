@@ -372,8 +372,8 @@ async fn import_opml(app: AppHandle, content: String) -> Result<usize, String> {
 }
 
 /// Open a URL in the default browser while keeping the reader frontmost.
-/// `open -g` asks for no activation, but some browsers (Chrome etc.) activate
-/// themselves anyway — so we also grab the focus back right afterwards.
+/// Some browsers activate themselves even when asked not to, so supported
+/// desktop platforms grab focus back right afterwards.
 #[tauri::command]
 async fn open_background(app: AppHandle, url: String) -> Result<(), String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -407,10 +407,37 @@ async fn open_background(app: AppHandle, url: String) -> Result<(), String> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let win = app.get_webview_window("main");
+        let was_focused = win
+            .as_ref()
+            .and_then(|w| w.is_focused().ok())
+            .unwrap_or(false);
+
+        // Avoid cmd.exe so URL metacharacters such as '&' are not interpreted
+        // by a shell. rundll32 delegates the URL to Windows' default handler.
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", &url])
+            .spawn()
+            .map_err(|e| format!("ブラウザで開けません: {e}"))?;
+
+        if was_focused {
+            for delay_ms in [200u64, 450, 900] {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                if let Some(win) = app.get_webview_window("main") {
+                    if !win.is_focused().unwrap_or(false) {
+                        let _ = win.set_focus();
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = app;
-        Err("この機能はmacOSのみ対応です".to_string())
+        Err("この機能はmacOSとWindowsのみ対応です".to_string())
     }
 }
 

@@ -7,6 +7,25 @@ use tokio::process::{Child, ChildStdin, Command};
 
 static SHELL_PATH: OnceLock<String> = OnceLock::new();
 
+/// npm installs command shims as `.cmd` files on Windows. `Command::new("pi")`
+/// does not resolve those shims, so use the explicit filename there.
+pub fn pi_program() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "pi.cmd"
+    } else {
+        "pi"
+    }
+}
+
+/// Build a Pi command without opening a console window from the Windows GUI.
+pub fn new_pi_command() -> Command {
+    let mut command = Command::new(pi_program());
+    command.env("PATH", login_shell_path());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    command
+}
+
 /// Resolve the user's terminal PATH via an interactive login shell.
 /// Finder-launched GUI apps only get launchd's minimal PATH, which misses
 /// mise/nvm/Homebrew locations — so neither `pi` nor the `node` its shebang
@@ -14,6 +33,9 @@ static SHELL_PATH: OnceLock<String> = OnceLock::new();
 /// plus any commands pi's bash tool runs.
 pub fn login_shell_path() -> &'static str {
     SHELL_PATH.get_or_init(|| {
+        if cfg!(target_os = "windows") {
+            return std::env::var("PATH").unwrap_or_default();
+        }
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         std::process::Command::new(&shell)
             .args(["-l", "-i", "-c", "echo \"__PATH__$PATH\""])
@@ -68,8 +90,7 @@ impl PiBridge {
             *guard = None; // process died; respawn below
         }
 
-        let mut child = Command::new("pi")
-            .env("PATH", login_shell_path())
+        let mut child = new_pi_command()
             .args([
                 "--mode",
                 "rpc",

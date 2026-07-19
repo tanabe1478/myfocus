@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 
 const PI_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -221,8 +222,7 @@ pub async fn summarize_comments_text(text: &str, model: Option<&str>) -> Result<
 pub async fn list_models() -> Result<Vec<String>, String> {
     let output = tokio::time::timeout(
         Duration::from_secs(30),
-        tokio::process::Command::new("pi")
-            .env("PATH", crate::pi_bridge::login_shell_path())
+        crate::pi_bridge::new_pi_command()
             .args(["--list-models"])
             .stdin(std::process::Stdio::null())
             .output(),
@@ -237,7 +237,7 @@ pub async fn list_models() -> Result<Vec<String>, String> {
     let text = String::from_utf8_lossy(&output.stdout);
     let models = text
         .lines()
-        .skip(1) // ヘッダ行
+        .skip(1)
         .filter_map(|line| {
             let mut cols = line.split_whitespace();
             match (cols.next(), cols.next()) {
@@ -267,19 +267,33 @@ async fn pi_print(prompt: &str, model: Option<&str>) -> Result<String, String> {
         args.push("--model");
         args.push(m);
     }
-    args.push(prompt);
 
-    let output = tokio::time::timeout(
-        PI_TIMEOUT,
-        tokio::process::Command::new("pi")
-            .env("PATH", crate::pi_bridge::login_shell_path())
-            .args(&args)
-            .stdin(std::process::Stdio::null())
-            .output(),
-    )
-    .await
-    .map_err(|_| "piの応答がタイムアウトしました".to_string())?
-    .map_err(|e| format!("piを起動できません: {e}"))?;
+    // Feed the prompt through stdin instead of a command-line argument.
+    // HN batches can exceed Windows' roughly 32 KiB command-line limit.
+    let mut child = crate::pi_bridge::new_pi_command()
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("piを起動できません: {e}"))?;
+    let mut stdin = child.stdin.take().ok_or("piのstdinを取得できません")?;
+    stdin
+        .write_all(prompt.as_bytes())
+        .await
+        .map_err(|e| format!("piへプロンプトを送信できません: {e}"))?;
+    stdin
+        .shutdown()
+        .await
+        .map_err(|e| format!("piのstdinを閉じられません: {e}"))?;
+    // On Windows an anonymous pipe does not signal EOF until the handle is
+    // actually dropped; shutdown alone can leave pi waiting indefinitely.
+    drop(stdin);
+
+    let output = tokio::time::timeout(PI_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| "piの応答がタイムアウトしました".to_string())?
+        .map_err(|e| format!("piの実行結果を取得できません: {e}"))?;
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);

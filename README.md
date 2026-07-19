@@ -21,7 +21,7 @@
 
 必要なもの:
 
-- [Rust](https://rustup.rs/)（1.93以上）
+- [Rust](https://rustup.rs/)（stable最新版。`rustup update stable` を推奨）
 - [Node.js](https://nodejs.org/) 22系 + [pnpm](https://pnpm.io/)
 - [pi CLI](https://pi.dev/)（AI機能を使う場合。未インストールでもRSSリーダーとしては動作します）
 
@@ -69,7 +69,9 @@ src/
     └── AiPanel.tsx          AIチャット（FEED:行を購読ボタンに変換）
 ```
 
-- 記事DBの場所: `~/Library/Application Support/jp.tanabe.myfocus/myfocus.db`（macOS）
+- 記事DBの場所:
+  - macOS: `~/Library/Application Support/jp.tanabe.myfocus/myfocus.db`
+  - Windows: `%APPDATA%\jp.tanabe.myfocus\myfocus.db`
 - AIへのフィード提案プロトコル: アシスタントは応答に `FEED: <url>` 行を含めるようシステムプロンプトで指示されており、UIがこの行を購読ボタンとしてレンダリングする
 
 ## 設計メモ

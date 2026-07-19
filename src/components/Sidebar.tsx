@@ -259,15 +259,17 @@ export function Sidebar({
   );
 }
 
+const DEFAULT_TRANSLATE_MODEL = "openai-codex/gpt-5.6-luna";
+
 function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [days, setDays] = useState("");
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(DEFAULT_TRANSLATE_MODEL);
   const [models, setModels] = useState<string[]>([]);
   const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
     getSetting("retention_days").then((v) => setDays(v ?? "90"));
-    getSetting("translate_model").then((v) => setModel(v ?? ""));
+    getSetting("translate_model").then((v) => setModel(v || DEFAULT_TRANSLATE_MODEL));
     listPiModels().then(setModels).catch(() => setModels([]));
   }, []);
 
@@ -278,7 +280,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
       return;
     }
     await setSetting("retention_days", String(n));
-    await setSetting("translate_model", model.trim());
+    await setSetting("translate_model", model);
     setNote("保存しました");
     setTimeout(onClose, 1200);
   };
@@ -306,29 +308,28 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
         既読記事をこの日数の経過後に自動削除します。スター付きは削除されません。0で無効。
       </div>
 
-      <div className="settings-title" style={{ marginTop: 12 }}>翻訳・要約のモデル</div>
+      <div className="settings-title" style={{ marginTop: 12 }}>
+        翻訳・要約のモデル
+      </div>
       <div className="settings-row">
         <select
           className="settings-model-input"
           value={model}
           onChange={(e) => setModel(e.target.value)}
         >
-          <option value="">piのデフォルト</option>
           {models.map((m) => (
             <option key={m} value={m}>
               {m}
             </option>
           ))}
-          {model && !models.includes(model) && (
-            <option value={model}>{model}</option>
-          )}
+          {!models.includes(model) && <option value={model}>{model}</option>}
         </select>
         <button className="settings-save" onClick={save}>
           保存
         </button>
       </div>
       <div className="settings-hint">
-        Hacker Newsの翻訳・要約に使うモデル。翻訳は軽いタスクなので、安価・高速なモデルの指定を推奨。
+        Hacker Newsの新しい翻訳・要約から適用されます。既存の生成結果は保持されます。
       </div>
       {note && <div className="add-feed-status">{note}</div>}
     </div>

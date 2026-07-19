@@ -11,11 +11,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 
 const ITEM_TYPE: &str = "hn";
+const DEFAULT_DIGEST_MODEL: &str = "openai-codex/gpt-5.6-luna";
 const FRONT_PAGE_API: &str = "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=30";
 const BATCH_SIZE: i64 = 4;
 // 同時に走らせるバッチ数（= pi の並列プロセス数）
 const PARALLEL_BATCHES: usize = 3;
-const MAX_ROUNDS: usize = 10;
+const MAX_ROUNDS: usize = 20;
 const BODY_MAX_CHARS: usize = 6000;
 const COMMENTS_MAX_CHARS: usize = 5000;
 
@@ -79,6 +80,14 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<HnItem>> {
         item.digest = digests.remove(&item.id);
     }
     Ok(items)
+}
+
+fn selected_model(conn: &Connection) -> String {
+    db::get_setting(conn, "translate_model")
+        .ok()
+        .flatten()
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_DIGEST_MODEL.to_string())
 }
 
 fn count_pending(conn: &Connection) -> rusqlite::Result<i64> {
@@ -222,20 +231,25 @@ pub fn kick(app: &AppHandle) {
         RUNNING.store(false, Ordering::SeqCst);
         emit_status(&app, false);
         if let Err(e) = result {
+            eprintln!("Hacker News digest failed: {e}");
             let _ = app.emit("hn-error", &e);
         }
     });
 }
 
 async fn run(app: &AppHandle) -> Result<(), String> {
+    let mut stalled_rounds = 0;
+    let mut last_error: Option<String> = None;
+
     for _ in 0..MAX_ROUNDS {
-        let (pending, model, client) = {
+        let (pending, remaining_before, model, client) = {
             let state = app.state::<crate::AppState>();
             let conn = crate::lock_db(&state)?;
             let pending = pending_items(&conn, BATCH_SIZE * PARALLEL_BATCHES as i64)
                 .map_err(|e| e.to_string())?;
-            let model = db::get_setting(&conn, "translate_model").ok().flatten();
-            (pending, model, state.client.clone())
+            let remaining = count_pending(&conn).map_err(|e| e.to_string())?;
+            let model = Some(selected_model(&conn));
+            (pending, remaining, model, state.client.clone())
         };
         if pending.is_empty() {
             return Ok(());
@@ -255,18 +269,48 @@ async fn run(app: &AppHandle) -> Result<(), String> {
             let client = client.clone();
             set.spawn(async move { process_batch(&app, chunk, model, client).await });
         }
-        let mut first_err: Option<String> = None;
+        let mut round_error: Option<String> = None;
         while let Some(joined) = set.join_next().await {
-            if let Ok(Err(e)) = joined {
-                first_err.get_or_insert(e);
+            match joined {
+                Ok(Err(e)) => {
+                    round_error.get_or_insert(e);
+                }
+                Err(e) => {
+                    round_error.get_or_insert_with(|| format!("翻訳タスクが終了しました: {e}"));
+                }
+                Ok(Ok(())) => {}
             }
         }
+
+        let remaining_after = {
+            let state = app.state::<crate::AppState>();
+            let conn = crate::lock_db(&state)?;
+            count_pending(&conn).map_err(|e| e.to_string())?
+        };
         emit_status(app, true);
-        if let Some(e) = first_err {
-            return Err(e);
+        if remaining_after == 0 {
+            return Ok(());
+        }
+
+        if let Some(e) = round_error {
+            last_error = Some(e);
+            if remaining_after >= remaining_before {
+                stalled_rounds += 1;
+                if stalled_rounds >= 3 {
+                    return Err(last_error.unwrap());
+                }
+                // Transient provider/network errors should not strand the last
+                // few stories until the next 15-minute refresh.
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            } else {
+                stalled_rounds = 0;
+            }
+        } else {
+            stalled_rounds = 0;
         }
     }
-    Ok(())
+
+    Err(last_error.unwrap_or_else(|| "翻訳キューを時間内に処理できませんでした".to_string()))
 }
 
 async fn process_batch(
@@ -368,10 +412,9 @@ pub async fn summarize_comments(app: &AppHandle, item_id: i64) -> Result<String,
         {
             return Ok(cached);
         }
-        let model = db::get_setting(&conn, "translate_model").ok().flatten();
         (
             format!("https://news.ycombinator.com/item?id={item_id}"),
-            model,
+            Some(selected_model(&conn)),
             state.client.clone(),
         )
     };
