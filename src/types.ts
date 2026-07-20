@@ -19,6 +19,9 @@ export interface Article {
   author: string | null;
   summary: string | null;
   content_html: string | null;
+  full_text: string | null;
+  ai_summary: string | null;
+  ai_summary_model: string | null;
   published_at: number | null;
   read: boolean;
   starred: boolean;
@@ -49,7 +52,14 @@ export type Selection =
   | { kind: "starred" }
   | { kind: "feed"; feedId: number }
   | { kind: "category"; category: string }
+  | { kind: "search"; searchId: string; name: string; query: string }
   | { kind: "hn" };
+
+export interface SavedSearch {
+  id: string;
+  name: string;
+  query: string;
+}
 
 export interface AiMessage {
   role: "user" | "assistant";

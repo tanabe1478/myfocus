@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Article } from "../types";
 import { relativeTime } from "../format";
@@ -9,16 +9,82 @@ interface Props {
   article: Article | null;
   onToggleStar: (article: Article) => void;
   onToggleRead: (article: Article) => void;
+  onSummarize: (article: Article, force: boolean) => Promise<Article>;
   onAskAi: (article: Article) => void;
 }
 
-export function ReadingPane({ article, onToggleStar, onToggleRead, onAskAi }: Props) {
+export function ReadingPane({
+  article,
+  onToggleStar,
+  onToggleRead,
+  onSummarize,
+  onAskAi,
+}: Props) {
+  const [summarizing, setSummarizing] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSummarizing(false);
+    setSummaryError(null);
+  }, [article?.id]);
+
+  const generateSummary = async (force: boolean) => {
+    if (!article || summarizing) return;
+    setSummarizing(true);
+    setSummaryError(null);
+    try {
+      await onSummarize(article, force);
+    } catch (e) {
+      setSummaryError(String(e));
+    } finally {
+      setSummarizing(false);
+    }
+  };
+
   const html = useMemo(() => {
     if (!article?.content_html) return null;
-    return DOMPurify.sanitize(article.content_html, {
+    const sanitized = DOMPurify.sanitize(article.content_html, {
       FORBID_TAGS: ["style", "form", "input"],
     });
-  }, [article?.id, article?.content_html]);
+    if (!article.url) return sanitized;
+
+    // Feed HTML is injected into the Tauri document, so relative image/link
+    // URLs would otherwise resolve against the app itself instead of the article.
+    const doc = new DOMParser().parseFromString(sanitized, "text/html");
+    const resolve = (value: string) => {
+      try {
+        return new URL(value, article.url!).toString();
+      } catch {
+        return value;
+      }
+    };
+    doc.querySelectorAll<HTMLElement>("[src], [href], [poster]").forEach((el) => {
+      for (const attr of ["src", "href", "poster"]) {
+        const value = el.getAttribute(attr);
+        if (value && !value.startsWith("data:") && !value.startsWith("blob:")) {
+          el.setAttribute(attr, resolve(value));
+        }
+      }
+    });
+    doc.querySelectorAll<HTMLImageElement>("img[data-src]").forEach((img) => {
+      if (!img.getAttribute("src")) img.src = resolve(img.dataset.src!);
+    });
+    doc.querySelectorAll<HTMLElement>("[srcset]").forEach((el) => {
+      const srcset = el.getAttribute("srcset");
+      if (!srcset) return;
+      el.setAttribute(
+        "srcset",
+        srcset
+          .split(",")
+          .map((candidate) => {
+            const [url, ...descriptor] = candidate.trim().split(/\s+/);
+            return [resolve(url), ...descriptor].join(" ");
+          })
+          .join(", ")
+      );
+    });
+    return doc.body.innerHTML;
+  }, [article?.id, article?.content_html, article?.url]);
 
   if (!article) {
     return (
@@ -80,6 +146,31 @@ export function ReadingPane({ article, onToggleStar, onToggleRead, onAskAi }: Pr
         >
           {article.title || "(無題)"}
         </h1>
+        <section className="article-ai-summary">
+          {article.ai_summary ? (
+            <>
+              <div className="article-ai-summary-header">
+                <span>✦ AI要約</span>
+                <button onClick={() => generateSummary(true)} disabled={summarizing}>
+                  {summarizing ? "再生成中…" : "再生成"}
+                </button>
+              </div>
+              <div className="article-ai-summary-text">{article.ai_summary}</div>
+              {article.ai_summary_model && (
+                <div className="article-ai-summary-model">{article.ai_summary_model}</div>
+              )}
+            </>
+          ) : (
+            <button
+              className="article-ai-summary-generate"
+              onClick={() => generateSummary(false)}
+              disabled={summarizing}
+            >
+              {summarizing ? "元記事を取得して要約しています…" : "✦ AI要約を生成"}
+            </button>
+          )}
+          {summaryError && <div className="article-ai-summary-error">{summaryError}</div>}
+        </section>
         {html ? (
           <div
             className="reading-content"

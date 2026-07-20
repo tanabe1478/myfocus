@@ -4,16 +4,20 @@ import { fuzzySearch } from "../api";
 import { relativeTime } from "../format";
 
 interface Props {
+  savedQueries: string[];
+  onSave: (query: string) => void;
   onClose: () => void;
   onSelect: (article: Article) => void;
 }
 
-export function SearchOverlay({ onClose, onSelect }: Props) {
+export function SearchOverlay({ savedQueries, onSave, onClose, onSelect }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Article[]>([]);
   const [cursor, setCursor] = useState(0);
   const seq = useRef(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const trimmedQuery = query.trim();
+  const saved = savedQueries.some((q) => q.toLowerCase() === trimmedQuery.toLowerCase());
 
   useEffect(() => {
     const id = ++seq.current;
@@ -55,14 +59,23 @@ export function SearchOverlay({ onClose, onSelect }: Props) {
   return (
     <div className="overlay-backdrop" onClick={onClose}>
       <div className="search-panel" onClick={(e) => e.stopPropagation()}>
-        <input
-          autoFocus
-          className="search-input"
-          placeholder="全文検索（スペース区切りでAND検索）"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={onKeyDown}
-        />
+        <div className="search-input-row">
+          <input
+            autoFocus
+            className="search-input"
+            placeholder="全文検索（スペース区切りでAND検索）"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onKeyDown}
+          />
+          <button
+            className="search-save"
+            disabled={!trimmedQuery || saved}
+            onClick={() => onSave(trimmedQuery)}
+          >
+            {saved ? "保存済み" : "検索を保存"}
+          </button>
+        </div>
         <div className="search-results" ref={listRef}>
           {results.map((a, i) => (
             <div

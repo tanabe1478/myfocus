@@ -62,6 +62,59 @@ fn get_article(state: State<AppState>, article_id: i64) -> Result<Article, Strin
     db::get_article(&conn, article_id).map_err(|e| e.to_string())
 }
 
+const DEFAULT_SUMMARY_MODEL: &str = "openai-codex/gpt-5.6-luna";
+
+#[tauri::command]
+async fn summarize_article(
+    app: AppHandle,
+    article_id: i64,
+    force: bool,
+) -> Result<Article, String> {
+    let (article, model, client) = {
+        let state = app.state::<AppState>();
+        let conn = lock_db(&state)?;
+        let article = db::get_article(&conn, article_id).map_err(|e| e.to_string())?;
+        if !force && article.ai_summary.is_some() {
+            return Ok(article);
+        }
+        let model = db::get_setting(&conn, "summary_model")
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_SUMMARY_MODEL.to_string());
+        (article, model, state.client.clone())
+    };
+
+    let text = if let Some(text) = article.full_text.as_deref() {
+        text.to_string()
+    } else {
+        let fetched = match article.url.as_deref() {
+            Some(url) => fetcher::fetch_page_text(&client, url, 24_000).await.ok(),
+            None => None,
+        };
+        let text = fetched
+            .or_else(|| {
+                article
+                    .content_html
+                    .as_deref()
+                    .map(|html| fetcher::strip_html(html, 24_000))
+            })
+            .or_else(|| article.summary.clone())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("要約できる本文がありません")?;
+        let state = app.state::<AppState>();
+        let conn = lock_db(&state)?;
+        db::store_full_text(&conn, article_id, &text).map_err(|e| e.to_string())?;
+        text
+    };
+
+    let summary = digest::summarize_article_text(&article.title, &text, &model).await?;
+    let state = app.state::<AppState>();
+    let conn = lock_db(&state)?;
+    db::store_ai_summary(&conn, article_id, &summary, &model).map_err(|e| e.to_string())?;
+    db::get_article(&conn, article_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn fuzzy_search(state: State<AppState>, query: String) -> Result<Vec<Article>, String> {
     let conn = lock_db(&state)?;
@@ -75,9 +128,37 @@ fn get_setting(state: State<AppState>, key: String) -> Result<Option<String>, St
 }
 
 #[tauri::command]
-fn set_setting(state: State<AppState>, key: String, value: String) -> Result<(), String> {
+fn set_setting(
+    app: AppHandle,
+    state: State<AppState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
     let conn = lock_db(&state)?;
-    db::set_setting(&conn, &key, &value).map_err(|e| e.to_string())
+    db::set_setting(&conn, &key, &value).map_err(|e| e.to_string())?;
+    let _ = app.emit("settings-updated", &key);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_settings(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "settings",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .initialization_script("window.__MYFOCUS_WINDOW__ = 'settings';")
+    .title("myfocus 設定")
+    .inner_size(520.0, 620.0)
+    .min_inner_size(440.0, 520.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -513,9 +594,11 @@ pub fn run() {
             list_feeds,
             list_articles,
             get_article,
+            summarize_article,
             fuzzy_search,
             get_setting,
             set_setting,
+            open_settings,
             mark_read,
             mark_starred,
             mark_all_read,
@@ -589,6 +672,18 @@ mod tests {
         assert_eq!(hits.len(), 1);
         let hits = db::search_articles(&conn, "Rust アニメーション", 50).unwrap();
         assert_eq!(hits.len(), 0);
+
+        // On-demand page extraction is added to the same FTS index.
+        let rust_id = db::search_articles(&conn, "ランタイム", 50).unwrap()[0].id;
+        db::store_full_text(&conn, rust_id, "本文だけに登場するカモノハシ識別子").unwrap();
+        let hits = db::search_articles(&conn, "カモノハシ", 50).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, rust_id);
+
+        db::store_ai_summary(&conn, rust_id, "AIによる要約", "provider/model").unwrap();
+        let article = db::get_article(&conn, rust_id).unwrap();
+        assert_eq!(article.ai_summary.as_deref(), Some("AIによる要約"));
+        assert_eq!(article.ai_summary_model.as_deref(), Some("provider/model"));
     }
 
     #[test]
@@ -628,9 +723,21 @@ mod tests {
             .unwrap();
         assert_eq!(remaining, vec!["new-read", "old-starred", "old-unread"]);
 
-        // FTS index stays in sync via triggers
+        // FTS index stays in sync via triggers.
         let hits = db::search_articles(&conn, "old-read", 50).unwrap();
         assert_eq!(hits.len(), 0);
+
+        // A feed that still advertises the cleaned-up item must not resurrect
+        // it as unread; the lightweight read-history tombstone blocks it.
+        seed_article(&mut conn, feed, "old-read", 100);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM articles WHERE title = 'old-read'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

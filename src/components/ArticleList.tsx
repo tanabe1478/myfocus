@@ -8,7 +8,7 @@ interface Props {
   selectedId: number | null;
   title: string;
   onSelect: (article: Article) => void;
-  onMarkAllRead: () => void;
+  onMarkAllRead?: () => void;
 }
 
 export function ArticleList({ articles, selectedId, title, onSelect, onMarkAllRead }: Props) {
@@ -34,9 +34,11 @@ export function ArticleList({ articles, selectedId, title, onSelect, onMarkAllRe
         <span className="pane-title" title={title}>
           {title}
         </span>
-        <button className="icon-button" title="すべて既読にする" onClick={onMarkAllRead}>
-          ✓
-        </button>
+        {onMarkAllRead && (
+          <button className="icon-button" title="すべて既読にする" onClick={onMarkAllRead}>
+            ✓
+          </button>
+        )}
       </div>
       <div className="article-rows" ref={parentRef}>
         <div

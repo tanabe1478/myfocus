@@ -17,11 +17,16 @@ export const fuzzySearch = (query: string) =>
 export const getArticle = (articleId: number) =>
   invoke<Article>("get_article", { articleId });
 
+export const summarizeArticle = (articleId: number, force = false) =>
+  invoke<Article>("summarize_article", { articleId, force });
+
 export const getSetting = (key: string) =>
   invoke<string | null>("get_setting", { key });
 
 export const setSetting = (key: string, value: string) =>
   invoke<void>("set_setting", { key, value });
+
+export const openSettings = () => invoke<void>("open_settings");
 
 export const addFeed = (url: string) => invoke<Feed>("add_feed", { url });
 

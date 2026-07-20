@@ -25,6 +25,9 @@ pub struct Article {
     pub author: Option<String>,
     pub summary: Option<String>,
     pub content_html: Option<String>,
+    pub full_text: Option<String>,
+    pub ai_summary: Option<String>,
+    pub ai_summary_model: Option<String>,
     pub published_at: Option<i64>,
     pub read: bool,
     pub starred: bool,
@@ -54,10 +57,23 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             author TEXT,
             summary TEXT,
             content_html TEXT,
+            full_text TEXT,
+            ai_summary TEXT,
+            ai_summary_model TEXT,
+            ai_summary_updated_at INTEGER,
             published_at INTEGER,
             read INTEGER NOT NULL DEFAULT 0,
             starred INTEGER NOT NULL DEFAULT 0,
             UNIQUE(feed_id, guid)
+        );
+
+        -- Lightweight tombstones prevent old read articles from returning as
+        -- unread when a feed still advertises them after retention cleanup.
+        CREATE TABLE IF NOT EXISTS article_read_history (
+            feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+            guid TEXT NOT NULL,
+            read_at INTEGER NOT NULL,
+            PRIMARY KEY (feed_id, guid)
         );
 
         CREATE INDEX IF NOT EXISTS idx_articles_feed ON articles(feed_id, published_at DESC);
@@ -75,6 +91,50 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             conn.execute(ddl, [])?;
         }
     }
+    for (column, ddl) in [
+        (
+            "full_text",
+            "ALTER TABLE articles ADD COLUMN full_text TEXT",
+        ),
+        (
+            "ai_summary",
+            "ALTER TABLE articles ADD COLUMN ai_summary TEXT",
+        ),
+        (
+            "ai_summary_model",
+            "ALTER TABLE articles ADD COLUMN ai_summary_model TEXT",
+        ),
+        (
+            "ai_summary_updated_at",
+            "ALTER TABLE articles ADD COLUMN ai_summary_updated_at INTEGER",
+        ),
+    ] {
+        let exists = conn
+            .prepare("SELECT 1 FROM pragma_table_info('articles') WHERE name = ?1")?
+            .exists([column])?;
+        if !exists {
+            conn.execute(ddl, [])?;
+        }
+    }
+
+    // FTS5 virtual tables cannot add columns. Recreate the old three-column
+    // index once so extracted article bodies become searchable.
+    let fts_exists = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'articles_fts'")?
+        .exists([])?;
+    let fts_has_full_text = fts_exists
+        && conn
+            .prepare("SELECT 1 FROM pragma_table_info('articles_fts') WHERE name = 'full_text'")?
+            .exists([])?;
+    if fts_exists && !fts_has_full_text {
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS articles_fts_insert;
+             DROP TRIGGER IF EXISTS articles_fts_delete;
+             DROP TRIGGER IF EXISTS articles_fts_update;
+             DROP TABLE articles_fts;",
+        )?;
+    }
+
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS settings (
@@ -82,18 +142,19 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             value TEXT NOT NULL
         );
 
-        -- full-text index over article title/summary; trigram tokenizer for
-        -- substring matching that also works with Japanese text
+        -- full-text index over article metadata and extracted page body;
+        -- trigram tokenization supports substring matching and Japanese text.
         CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
-            title, summary, feed_title,
+            title, summary, feed_title, full_text,
             tokenize = 'trigram'
         );
 
         CREATE TRIGGER IF NOT EXISTS articles_fts_insert AFTER INSERT ON articles BEGIN
-            INSERT INTO articles_fts (rowid, title, summary, feed_title)
+            INSERT INTO articles_fts (rowid, title, summary, feed_title, full_text)
             VALUES (
                 new.id, new.title, COALESCE(new.summary, ''),
-                COALESCE((SELECT title FROM feeds WHERE id = new.feed_id), '')
+                COALESCE((SELECT title FROM feeds WHERE id = new.feed_id), ''),
+                COALESCE(new.full_text, '')
             );
         END;
 
@@ -102,21 +163,30 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         END;
 
         CREATE TRIGGER IF NOT EXISTS articles_fts_update
-        AFTER UPDATE OF title, summary ON articles BEGIN
+        AFTER UPDATE OF title, summary, full_text ON articles BEGIN
             DELETE FROM articles_fts WHERE rowid = old.id;
-            INSERT INTO articles_fts (rowid, title, summary, feed_title)
+            INSERT INTO articles_fts (rowid, title, summary, feed_title, full_text)
             VALUES (
                 new.id, new.title, COALESCE(new.summary, ''),
-                COALESCE((SELECT title FROM feeds WHERE id = new.feed_id), '')
+                COALESCE((SELECT title FROM feeds WHERE id = new.feed_id), ''),
+                COALESCE(new.full_text, '')
             );
         END;
         "#,
     )?;
 
+    // Preserve the state of articles that were read before tombstones existed.
+    conn.execute(
+        "INSERT OR IGNORE INTO article_read_history (feed_id, guid, read_at)
+         SELECT feed_id, guid, strftime('%s','now') FROM articles WHERE read = 1",
+        [],
+    )?;
+
     // backfill the FTS index for articles inserted before it existed
     conn.execute(
-        "INSERT INTO articles_fts (rowid, title, summary, feed_title)
-         SELECT a.id, a.title, COALESCE(a.summary, ''), f.title
+        "INSERT INTO articles_fts (rowid, title, summary, feed_title, full_text)
+         SELECT a.id, a.title, COALESCE(a.summary, ''), f.title,
+                COALESCE(a.full_text, '')
          FROM articles a JOIN feeds f ON f.id = a.feed_id
          WHERE a.id NOT IN (SELECT rowid FROM articles_fts)",
         [],
@@ -147,6 +217,16 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Resul
 /// Delete read, unstarred articles older than the given number of days.
 /// Articles without a publish date are kept. Returns the number deleted.
 pub fn cleanup_old_articles(conn: &Connection, days: i64) -> rusqlite::Result<usize> {
+    // Keep only feed_id + guid before dropping the heavy article body. A later
+    // feed refresh can then ignore the item instead of resurrecting it unread.
+    conn.execute(
+        "INSERT OR IGNORE INTO article_read_history (feed_id, guid, read_at)
+         SELECT feed_id, guid, strftime('%s','now') FROM articles
+         WHERE read = 1 AND starred = 0
+           AND published_at IS NOT NULL
+           AND published_at < strftime('%s', 'now') - ?1 * 86400",
+        [days],
+    )?;
     conn.execute(
         "DELETE FROM articles
          WHERE read = 1 AND starred = 0
@@ -179,17 +259,20 @@ fn row_to_article(row: &rusqlite::Row) -> rusqlite::Result<Article> {
         author: row.get(6)?,
         summary: row.get(7)?,
         content_html: row.get(8)?,
-        published_at: row.get(9)?,
-        read: row.get::<_, i64>(10)? != 0,
-        starred: row.get::<_, i64>(11)? != 0,
+        full_text: row.get(9)?,
+        ai_summary: row.get(10)?,
+        ai_summary_model: row.get(11)?,
+        published_at: row.get(12)?,
+        read: row.get::<_, i64>(13)? != 0,
+        starred: row.get::<_, i64>(14)? != 0,
     })
 }
 
-const ARTICLE_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, a.content_html, a.published_at, a.read, a.starred";
+const ARTICLE_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, a.content_html, a.full_text, a.ai_summary, a.ai_summary_model, a.published_at, a.read, a.starred";
 
 // list views skip content_html (it can be tens of KB per article); the reading
 // pane loads the full row via get_article
-const ARTICLE_LIST_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, NULL, a.published_at, a.read, a.starred";
+const ARTICLE_LIST_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, NULL, NULL, NULL, NULL, a.published_at, a.read, a.starred";
 
 pub fn list_feeds(conn: &Connection) -> rusqlite::Result<Vec<Feed>> {
     let mut stmt = conn.prepare(
@@ -249,7 +332,11 @@ pub fn insert_articles(
     {
         let mut stmt = tx.prepare(
             "INSERT OR IGNORE INTO articles (feed_id, guid, title, url, author, summary, content_html, published_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM article_read_history h
+                 WHERE h.feed_id = ?1 AND h.guid = ?2
+             )",
         )?;
         for a in articles {
             inserted += stmt.execute(params![
@@ -310,7 +397,35 @@ pub fn get_article(conn: &Connection, article_id: i64) -> rusqlite::Result<Artic
     conn.query_row(&sql, [article_id], row_to_article)
 }
 
-/// Full-text search over title/summary/feed title.
+pub fn store_full_text(
+    conn: &Connection,
+    article_id: i64,
+    full_text: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE articles SET full_text = ?1 WHERE id = ?2",
+        params![full_text, article_id],
+    )?;
+    Ok(())
+}
+
+pub fn store_ai_summary(
+    conn: &Connection,
+    article_id: i64,
+    summary: &str,
+    model: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE articles
+         SET ai_summary = ?1, ai_summary_model = ?2,
+             ai_summary_updated_at = strftime('%s','now')
+         WHERE id = ?3",
+        params![summary, model, article_id],
+    )?;
+    Ok(())
+}
+
+/// Full-text search over title, summary, feed title, and extracted page body.
 /// The trigram tokenizer needs 3+ character terms, so short queries (common in
 /// Japanese) fall back to plain substring matching.
 pub fn search_articles(
@@ -349,7 +464,7 @@ pub fn search_articles(
     let mut p: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     for t in &terms {
         sql.push_str(
-            " AND (a.title LIKE ?1 ESCAPE '\\' OR COALESCE(a.summary,'') LIKE ?1 ESCAPE '\\' OR f.title LIKE ?1 ESCAPE '\\')"
+            " AND (a.title LIKE ?1 ESCAPE '\\' OR COALESCE(a.summary,'') LIKE ?1 ESCAPE '\\' OR f.title LIKE ?1 ESCAPE '\\' OR COALESCE(a.full_text,'') LIKE ?1 ESCAPE '\\')"
                 .replace("?1", &format!("?{}", p.len() + 1))
                 .as_str(),
         );
@@ -377,6 +492,19 @@ pub fn set_read(conn: &Connection, article_id: i64, read: bool) -> rusqlite::Res
         "UPDATE articles SET read = ?1 WHERE id = ?2",
         params![read as i64, article_id],
     )?;
+    if read {
+        conn.execute(
+            "INSERT OR REPLACE INTO article_read_history (feed_id, guid, read_at)
+             SELECT feed_id, guid, strftime('%s','now') FROM articles WHERE id = ?1",
+            [article_id],
+        )?;
+    } else {
+        conn.execute(
+            "DELETE FROM article_read_history
+             WHERE (feed_id, guid) = (SELECT feed_id, guid FROM articles WHERE id = ?1)",
+            [article_id],
+        )?;
+    }
     Ok(())
 }
 
@@ -402,6 +530,11 @@ pub fn mark_all_read(
         )?,
         (None, None) => conn.execute("UPDATE articles SET read = 1", [])?,
     };
+    conn.execute(
+        "INSERT OR REPLACE INTO article_read_history (feed_id, guid, read_at)
+         SELECT feed_id, guid, strftime('%s','now') FROM articles WHERE read = 1",
+        [],
+    )?;
     Ok(())
 }
 

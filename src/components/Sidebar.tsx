@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { Feed, Selection } from "../types";
-import { getSetting, listPiModels, setSetting } from "../api";
+import { useMemo, useRef, useState } from "react";
+import type { Feed, SavedSearch, Selection } from "../types";
+import { openSettings } from "../api";
 
 const COLLAPSED_KEY = "myfocus.collapsedCategories";
 
@@ -15,9 +15,11 @@ function loadCollapsed(): Set<string> {
 interface Props {
   feeds: Feed[];
   selection: Selection;
+  savedSearches: SavedSearch[];
   totalUnread: number;
   refreshing: boolean;
   onSelect: (sel: Selection) => void;
+  onRemoveSavedSearch: (searchId: string) => void;
   onAddFeed: (url: string) => Promise<void>;
   onRemoveFeed: (feedId: number) => void;
   onRefresh: () => void;
@@ -27,9 +29,11 @@ interface Props {
 export function Sidebar({
   feeds,
   selection,
+  savedSearches,
   totalUnread,
   refreshing,
   onSelect,
+  onRemoveSavedSearch,
   onAddFeed,
   onRemoveFeed,
   onRefresh,
@@ -41,7 +45,6 @@ export function Sidebar({
   const [error, setError] = useState<string | null>(null);
   const [importNote, setImportNote] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const groups = useMemo(() => {
@@ -108,8 +111,8 @@ export function Sidebar({
         <span>
           <button
             className="icon-button"
-            title="設定"
-            onClick={() => setSettingsOpen((v) => !v)}
+            title="設定（⌘/Ctrl+,）"
+            onClick={() => openSettings()}
           >
             ⚙
           </button>
@@ -123,8 +126,6 @@ export function Sidebar({
           </button>
         </span>
       </div>
-
-      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
 
       <nav className="smart-list">
         <SidebarRow
@@ -153,6 +154,31 @@ export function Sidebar({
           onClick={() => onSelect({ kind: "hn" })}
         />
       </nav>
+
+      {savedSearches.length > 0 && (
+        <>
+          <div className="section-label">保存した検索</div>
+          <nav className="smart-list saved-search-list">
+            {savedSearches.map((search) => {
+              const target: Selection = {
+                kind: "search",
+                searchId: search.id,
+                name: search.name,
+                query: search.query,
+              };
+              return (
+                <SidebarRow
+                  key={search.id}
+                  label={`⌕ ${search.name}`}
+                  selected={isSelected(target)}
+                  onClick={() => onSelect(target)}
+                  onRemove={() => onRemoveSavedSearch(search.id)}
+                />
+              );
+            })}
+          </nav>
+        </>
+      )}
 
       <div className="section-label">
         フィード
@@ -256,83 +282,6 @@ export function Sidebar({
         )}
       </div>
     </aside>
-  );
-}
-
-const DEFAULT_TRANSLATE_MODEL = "openai-codex/gpt-5.6-luna";
-
-function SettingsPanel({ onClose }: { onClose: () => void }) {
-  const [days, setDays] = useState("");
-  const [model, setModel] = useState(DEFAULT_TRANSLATE_MODEL);
-  const [models, setModels] = useState<string[]>([]);
-  const [note, setNote] = useState<string | null>(null);
-
-  useEffect(() => {
-    getSetting("retention_days").then((v) => setDays(v ?? "90"));
-    getSetting("translate_model").then((v) => setModel(v || DEFAULT_TRANSLATE_MODEL));
-    listPiModels().then(setModels).catch(() => setModels([]));
-  }, []);
-
-  const save = async () => {
-    const n = parseInt(days, 10);
-    if (isNaN(n) || n < 0) {
-      setNote("0以上の日数を入力してください");
-      return;
-    }
-    await setSetting("retention_days", String(n));
-    await setSetting("translate_model", model);
-    setNote("保存しました");
-    setTimeout(onClose, 1200);
-  };
-
-  return (
-    <div className="settings-panel">
-      <div className="settings-title">記事の保持期間</div>
-      <div className="settings-row">
-        <input
-          type="number"
-          min={0}
-          value={days}
-          onChange={(e) => setDays(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") save();
-            if (e.key === "Escape") onClose();
-          }}
-        />
-        <span>日</span>
-        <button className="settings-save" onClick={save}>
-          保存
-        </button>
-      </div>
-      <div className="settings-hint">
-        既読記事をこの日数の経過後に自動削除します。スター付きは削除されません。0で無効。
-      </div>
-
-      <div className="settings-title" style={{ marginTop: 12 }}>
-        翻訳・要約のモデル
-      </div>
-      <div className="settings-row">
-        <select
-          className="settings-model-input"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-        >
-          {models.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-          {!models.includes(model) && <option value={model}>{model}</option>}
-        </select>
-        <button className="settings-save" onClick={save}>
-          保存
-        </button>
-      </div>
-      <div className="settings-hint">
-        Hacker Newsの新しい翻訳・要約から適用されます。既存の生成結果は保持されます。
-      </div>
-      {note && <div className="add-feed-status">{note}</div>}
-    </div>
   );
 }
 
