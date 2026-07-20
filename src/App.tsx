@@ -327,6 +327,19 @@ export default function App() {
     [pi.send]
   );
 
+  const handleOpenAiArticle = useCallback(
+    async (articleId: number) => {
+      try {
+        const article = await api.getArticle(articleId);
+        setSelection({ kind: "all" });
+        selectArticle(article);
+      } catch (e) {
+        alert(`記事を開けませんでした: ${e}`);
+      }
+    },
+    [selectArticle]
+  );
+
   const handleSubscribeSuggestion = useCallback(
     async (url: string) => {
       try {
@@ -410,6 +423,7 @@ export default function App() {
           onAbort={pi.abort}
           onReset={pi.reset}
           onSubscribe={handleSubscribeSuggestion}
+          onOpenArticle={handleOpenAiArticle}
           onClose={() => setAiOpen(false)}
         />
       ) : (

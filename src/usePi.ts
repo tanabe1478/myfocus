@@ -99,7 +99,7 @@ export function usePi() {
         case "tool_execution_start":
           setStatus(
             ev.toolName === "bash"
-              ? "Webを検索しています…"
+              ? "記事を検索・確認しています…"
               : `ツール実行中: ${ev.toolName}`
           );
           break;

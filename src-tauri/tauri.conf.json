@@ -12,15 +12,27 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "myfocus",
         "width": 1280,
         "height": 820,
         "minWidth": 960,
         "minHeight": 600
+      },
+      {
+        "label": "settings",
+        "title": "myfocus 設定",
+        "url": "settings.html",
+        "width": 520,
+        "height": 620,
+        "minWidth": 440,
+        "minHeight": 520,
+        "visible": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": ["default"]
     }
   },
   "bundle": {

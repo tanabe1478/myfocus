@@ -3,6 +3,7 @@ mod digest;
 mod fetcher;
 mod hn;
 mod pi_bridge;
+mod tool_cli;
 
 use db::{Article, Feed};
 use pi_bridge::PiBridge;
@@ -142,23 +143,36 @@ fn set_setting(
 
 #[tauri::command]
 fn open_settings(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("settings") {
-        let _ = window.show();
-        window.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        "settings",
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .initialization_script("window.__MYFOCUS_WINDOW__ = 'settings';")
-    .title("myfocus 設定")
-    .inner_size(520.0, 620.0)
-    .min_inner_size(440.0, 520.0)
-    .build()
-    .map_err(|e| e.to_string())?;
+    let window = app
+        .get_webview_window("settings")
+        .ok_or("設定ウィンドウが見つかりません")?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+fn close_settings(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("settings")
+        .ok_or("設定ウィンドウが見つかりません")?;
+    window.hide().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn is_settings_visible(app: AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("settings")
+        .ok_or("設定ウィンドウが見つかりません")?;
+    window.is_visible().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn request_settings_native_close(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("settings")
+        .ok_or("設定ウィンドウが見つかりません")?;
+    window.close().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -557,14 +571,26 @@ fn run_cleanup(app: &AppHandle) {
     }
 }
 
+pub fn run_tool_cli(args: &[String]) -> Result<(), String> {
+    tool_cli::run(args)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    #[cfg(debug_assertions)]
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+
+    builder.setup(|app| {
+            let data_dir = match std::env::var_os("MYFOCUS_DATA_DIR") {
+                Some(path) => std::path::PathBuf::from(path),
+                None => app.path().app_data_dir()?,
+            };
             std::fs::create_dir_all(&data_dir)?;
-            let conn = db::open(&data_dir.join("myfocus.db"))?;
+            let db_path = data_dir.join("myfocus.db");
+            let conn = db::open(&db_path)?;
             digest::init(&conn)?;
             hn::init(&conn)?;
 
@@ -575,19 +601,34 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
                 client,
-                pi: PiBridge::new(),
+                pi: PiBridge::new(db_path, std::env::current_exe()?),
             });
 
-            // background poller: refresh on launch, then every 15 minutes
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    run_cleanup(&handle);
-                    let _ = hn::refresh(&handle).await;
-                    let _ = refresh_all_inner(&handle).await;
-                    tokio::time::sleep(POLL_INTERVAL).await;
-                }
-            });
+            // Keep the statically configured settings webview alive. Both the
+            // native title-bar close button and the in-page × only hide it.
+            if let Some(settings) = app.get_webview_window("settings") {
+                let window = settings.clone();
+                settings.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                });
+            }
+
+            // background poller: refresh on launch, then every 15 minutes.
+            // E2E runs use an isolated DB and avoid external network traffic.
+            if std::env::var_os("MYFOCUS_E2E").is_none() {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        run_cleanup(&handle);
+                        let _ = hn::refresh(&handle).await;
+                        let _ = refresh_all_inner(&handle).await;
+                        tokio::time::sleep(POLL_INTERVAL).await;
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -599,6 +640,9 @@ pub fn run() {
             get_setting,
             set_setting,
             open_settings,
+            close_settings,
+            is_settings_visible,
+            request_settings_native_close,
             mark_read,
             mark_starred,
             mark_all_read,

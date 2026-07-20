@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use serde::Serialize;
 use std::path::Path;
 
@@ -31,6 +31,10 @@ pub struct Article {
     pub published_at: Option<i64>,
     pub read: bool,
     pub starred: bool,
+}
+
+pub fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {

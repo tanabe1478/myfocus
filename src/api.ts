@@ -27,6 +27,7 @@ export const setSetting = (key: string, value: string) =>
   invoke<void>("set_setting", { key, value });
 
 export const openSettings = () => invoke<void>("open_settings");
+export const closeSettings = () => invoke<void>("close_settings");
 
 export const addFeed = (url: string) => invoke<Feed>("add_feed", { url });
 

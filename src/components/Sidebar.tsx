@@ -111,6 +111,7 @@ export function Sidebar({
         <span>
           <button
             className="icon-button"
+            data-testid="open-settings"
             title="設定（⌘/Ctrl+,）"
             onClick={() => openSettings()}
           >

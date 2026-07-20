@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getSetting, listPiModels, setSetting } from "../api";
+import { closeSettings, getSetting, listPiModels, setSetting } from "../api";
 import {
   DEFAULT_SHORTCUTS,
   parseShortcuts,
@@ -49,10 +48,15 @@ export function SettingsWindow() {
   };
 
   return (
-    <main className="settings-window">
+    <main className="settings-window" data-testid="settings-window">
       <div className="pane-header settings-window-header">
         <span className="pane-title">設定</span>
-        <button className="icon-button" title="閉じる" onClick={() => getCurrentWindow().close()}>
+        <button
+          className="icon-button"
+          data-testid="close-settings"
+          title="閉じる"
+          onClick={() => closeSettings()}
+        >
           ×
         </button>
       </div>
@@ -61,7 +65,13 @@ export function SettingsWindow() {
         <section className="settings-section">
           <div className="settings-title">記事の保持期間</div>
           <div className="settings-row">
-            <input type="number" min={0} value={days} onChange={(e) => setDays(e.target.value)} />
+            <input
+              data-testid="retention-days"
+              type="number"
+              min={0}
+              value={days}
+              onChange={(e) => setDays(e.target.value)}
+            />
             <span>日</span>
           </div>
           <div className="settings-hint">
@@ -143,8 +153,12 @@ export function SettingsWindow() {
         </section>
 
         <div className="settings-footer">
-          {note && <span className="settings-note">{note}</span>}
-          <button className="settings-save" onClick={save}>
+          {note && (
+            <span className="settings-note" data-testid="settings-note">
+              {note}
+            </span>
+          )}
+          <button className="settings-save" data-testid="save-settings" onClick={save}>
             保存
           </button>
         </div>

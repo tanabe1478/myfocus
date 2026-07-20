@@ -10,10 +10,12 @@ interface Props {
   onAbort: () => void;
   onReset: () => void;
   onSubscribe: (url: string) => void;
+  onOpenArticle: (articleId: number) => void;
   onClose: () => void;
 }
 
 const FEED_LINE = /^FEED:\s*(https?:\/\/\S+)\s*$/;
+const ARTICLE_LINE = /^ARTICLE:\s*(\d+)\s*\|\s*(.+)\s*$/;
 const URL_PATTERN = /https?:\/\/[^\s<>"')\]]+/g;
 
 /// テキスト中のURLを外部ブラウザで開くリンクに変換する
@@ -50,6 +52,7 @@ export function AiPanel({
   onAbort,
   onReset,
   onSubscribe,
+  onOpenArticle,
   onClose,
 }: Props) {
   const [input, setInput] = useState("");
@@ -89,19 +92,32 @@ export function AiPanel({
       <div className="ai-messages" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="ai-hint">
-            <p>読んでいる記事について相談したり、新しい記事やフィードを探してもらえます。</p>
+            <p>
+              購読記事を横断して探したり、未読の整理や読んでいる記事について相談できます。必要ならWebから新しい記事やフィードも探します。
+            </p>
             <div className="ai-suggestions">
-              <button onClick={() => onSend("Rust関連の技術ブログのRSSフィードをいくつか探して")}>
-                Rustのフィードを探して
+              <button onClick={() => onSend("未読記事から、今日読むべきものを5件選んで理由と一緒に教えて")}>
+                今日読む記事を選んで
               </button>
-              <button onClick={() => onSend("最近話題のAI関連の記事を探して教えて")}>
-                AI関連の記事を探して
+              <button onClick={() => onSend("保存してある記事から、最近のAI関連の記事を探して要点を教えて")}>
+                保存記事からAI関連を探す
+              </button>
+              <button onClick={() => onSend("現在の記事数、未読数、よく購読している分野を教えて")}>
+                記事アーカイブの状況
+              </button>
+              <button onClick={() => onSend("Rust関連の技術ブログのRSSフィードをWebからいくつか探して")}>
+                新しいフィードをWebで探す
               </button>
             </div>
           </div>
         )}
         {messages.map((m, i) => (
-          <MessageBubble key={i} message={m} onSubscribe={onSubscribe} />
+          <MessageBubble
+            key={i}
+            message={m}
+            onSubscribe={onSubscribe}
+            onOpenArticle={onOpenArticle}
+          />
         ))}
         {status && <div className="ai-status">{status}</div>}
         {busy && !status && <div className="ai-status">考えています…</div>}
@@ -110,7 +126,7 @@ export function AiPanel({
       <div className="ai-input-row">
         <textarea
           className="ai-input"
-          placeholder="AIに相談・記事を探してもらう…（⌘Enterで送信）"
+          placeholder="保存記事を検索・相談する…（⌘Enterで送信）"
           value={input}
           rows={2}
           onChange={(e) => setInput(e.target.value)}
@@ -143,14 +159,25 @@ export function AiPanel({
 function MessageBubble({
   message,
   onSubscribe,
+  onOpenArticle,
 }: {
   message: AiMessage;
   onSubscribe: (url: string) => void;
+  onOpenArticle: (articleId: number) => void;
 }) {
   const lines = message.text.split("\n");
   return (
     <div className={`ai-message ${message.role}`}>
       {lines.map((line, i) => {
+        const article = line.match(ARTICLE_LINE);
+        if (article && message.role === "assistant") {
+          return (
+            <div key={i} className="article-suggestion">
+              <span className="article-suggestion-title">{article[2]}</span>
+              <button onClick={() => onOpenArticle(Number(article[1]))}>記事を開く</button>
+            </div>
+          );
+        }
         const feed = line.match(FEED_LINE);
         if (feed && message.role === "assistant") {
           return (

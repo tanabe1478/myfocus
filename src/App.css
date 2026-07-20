@@ -775,6 +775,35 @@ textarea {
   color: #fff;
 }
 
+.article-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 5px 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-reading);
+}
+
+.article-suggestion-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.article-suggestion button {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+}
+
 .ai-input-row {
   display: flex;
   gap: 8px;

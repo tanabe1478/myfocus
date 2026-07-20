@@ -1,11 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Capability for the main window",
+  "identifier": "e2e",
+  "description": "Debug-only WebdriverIO capability",
   "windows": ["main", "settings"],
   "permissions": [
     "core:default",
     "core:window:default",
-    "opener:default"
+    "opener:default",
+    "wdio:default",
+    "wdio-webdriver:default"
   ]
 }
