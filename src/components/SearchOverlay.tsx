@@ -57,12 +57,13 @@ export function SearchOverlay({ savedQueries, onSave, onClose, onSelect }: Props
   };
 
   return (
-    <div className="overlay-backdrop" onClick={onClose}>
+    <div className="overlay-backdrop" data-testid="search-overlay" onClick={onClose}>
       <div className="search-panel" onClick={(e) => e.stopPropagation()}>
         <div className="search-input-row">
           <input
             autoFocus
             className="search-input"
+            data-testid="search-input"
             placeholder="全文検索（スペース区切りでAND検索）"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -70,6 +71,7 @@ export function SearchOverlay({ savedQueries, onSave, onClose, onSelect }: Props
           />
           <button
             className="search-save"
+            data-testid="save-search"
             disabled={!trimmedQuery || saved}
             onClick={() => onSave(trimmedQuery)}
           >
@@ -80,6 +82,7 @@ export function SearchOverlay({ savedQueries, onSave, onClose, onSelect }: Props
           {results.map((a, i) => (
             <div
               key={a.id}
+              data-testid={`search-result-${a.id}`}
               className={`search-result ${i === cursor ? "selected" : ""}`}
               onMouseEnter={() => setCursor(i)}
               onClick={() => onSelect(a)}

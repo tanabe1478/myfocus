@@ -130,6 +130,29 @@ fn get_setting(state: State<AppState>, key: String) -> Result<Option<String>, St
 }
 
 #[tauri::command]
+fn seed_e2e_data(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    if !cfg!(debug_assertions) || std::env::var("MYFOCUS_E2E").as_deref() != Ok("1") {
+        return Err("E2Eビルドでのみ利用できます".to_string());
+    }
+    let conn = lock_db(&state)?;
+    conn.execute_batch(
+        "DELETE FROM articles;
+         DELETE FROM feeds;
+         INSERT INTO feeds (id, url, title, category) VALUES
+           (101, 'https://e2e.example/alpha.xml', 'Alpha Feed', NULL),
+           (102, 'https://e2e.example/beta.xml', 'Beta Feed', 'Tech');
+         INSERT INTO articles
+           (id, feed_id, guid, title, summary, published_at, read, starred) VALUES
+           (1001, 101, 'alpha-1', 'Alpha searchable story', 'Rust desktop testing guide', 300, 0, 0),
+           (1002, 101, 'alpha-2', 'Second Alpha story', 'Keyboard navigation article', 200, 0, 0),
+           (1003, 102, 'beta-1', 'Beta technology story', 'Tauri and WebDriver integration', 100, 0, 0);",
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = app.emit("feeds-updated", ());
+    Ok(())
+}
+
+#[tauri::command]
 fn set_setting(
     app: AppHandle,
     state: State<AppState>,
@@ -666,6 +689,7 @@ pub fn run() {
             summarize_article,
             fuzzy_search,
             get_setting,
+            seed_e2e_data,
             set_setting,
             list_ai_feedback,
             set_ai_feedback,

@@ -255,6 +255,7 @@ export function Sidebar({
                 className={`sidebar-row category-row ${
                   isSelected({ kind: "category", category }) ? "selected" : ""
                 }`}
+                data-testid={`category-${category}`}
                 onClick={() => onSelect({ kind: "category", category })}
               >
                 <button
@@ -313,6 +314,7 @@ function FeedRow({
         label={feed.title || feed.url}
         count={feed.unread_count}
         error={feed.last_error}
+        testId={`feed-${feed.id}`}
         selected={isSelected({ kind: "feed", feedId: feed.id })}
         onClick={() => onSelect({ kind: "feed", feedId: feed.id })}
         onRemove={() => {

@@ -50,6 +50,8 @@ export function ArticleList({ articles, selectedId, title, onSelect, onMarkAllRe
               <div
                 key={a.id}
                 data-index={vi.index}
+                data-article-id={a.id}
+                data-testid={`article-${a.id}`}
                 ref={virtualizer.measureElement}
                 className={`article-row ${a.id === selectedId ? "selected" : ""} ${a.read ? "read" : ""}`}
                 style={{

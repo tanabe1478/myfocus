@@ -51,7 +51,7 @@ export function AiPanel({
   };
 
   return (
-    <aside className="ai-panel">
+    <aside className="ai-panel" data-testid="ai-panel">
       <div className="pane-header">
         <span className="pane-title">✦ アシスタント</span>
         {recommendationSource && (

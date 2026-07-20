@@ -464,7 +464,12 @@ export default function App() {
           onClose={() => setAiOpen(false)}
         />
       ) : (
-        <button className="ai-fab" title="AIアシスタント" onClick={() => setAiOpen(true)}>
+        <button
+          className="ai-fab"
+          data-testid="open-ai"
+          title="AIアシスタント"
+          onClick={() => setAiOpen(true)}
+        >
           ✦
         </button>
       )}
