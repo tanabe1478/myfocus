@@ -1,5 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { closeSettings, getSetting, listPiModels, setSetting } from "../api";
+import {
+  BUILTIN_THEMES,
+  loadAndApplyTheme,
+  saveTheme,
+  type ThemeDefinition,
+} from "../theme";
 import {
   DEFAULT_SHORTCUTS,
   parseShortcuts,
@@ -17,6 +23,9 @@ export function SettingsWindow() {
   const [summaryModel, setSummaryModel] = useState(DEFAULT_TRANSLATE_MODEL);
   const [models, setModels] = useState<string[]>([]);
   const [shortcuts, setShortcuts] = useState<KeyboardShortcuts>(DEFAULT_SHORTCUTS);
+  const [themeId, setThemeId] = useState(BUILTIN_THEMES[0].id);
+  const [themes, setThemes] = useState<ThemeDefinition[]>(BUILTIN_THEMES);
+  const themeTouched = useRef(false);
   const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
@@ -24,6 +33,10 @@ export function SettingsWindow() {
     getSetting("translate_model").then((v) => setModel(v || DEFAULT_TRANSLATE_MODEL));
     getSetting("summary_model").then((v) => setSummaryModel(v || DEFAULT_TRANSLATE_MODEL));
     getSetting("keyboard_shortcuts").then((v) => setShortcuts(parseShortcuts(v)));
+    loadAndApplyTheme().then(({ theme, catalog }) => {
+      if (!themeTouched.current) setThemeId(theme.id);
+      setThemes(catalog);
+    });
     listPiModels().then(setModels).catch(() => setModels([]));
   }, []);
 
@@ -43,6 +56,7 @@ export function SettingsWindow() {
       setSetting("translate_model", model),
       setSetting("summary_model", summaryModel),
       setSetting("keyboard_shortcuts", JSON.stringify(shortcuts)),
+      saveTheme(themeId),
     ]);
     setNote("保存しました");
   };
@@ -62,6 +76,28 @@ export function SettingsWindow() {
       </div>
 
       <div className="settings-window-body">
+        <section className="settings-section">
+          <div className="settings-title">外観</div>
+          <select
+            className="settings-model-input settings-wide-input"
+            data-testid="theme-select"
+            value={themeId}
+            onChange={(e) => {
+              themeTouched.current = true;
+              setThemeId(e.target.value);
+            }}
+          >
+            {themes.map((theme) => (
+              <option key={theme.id} value={theme.id}>
+                {theme.name}{theme.builtin ? "" : "（カスタム）"}
+              </option>
+            ))}
+          </select>
+          <div className="settings-hint">
+            組み込みテーマを選択します。将来追加するカスタムテーマも同じ一覧に表示されます。
+          </div>
+        </section>
+
         <section className="settings-section">
           <div className="settings-title">記事の保持期間</div>
           <div className="settings-row">

@@ -21,23 +21,6 @@
   -webkit-font-smoothing: antialiased;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg-sidebar: #1c1b18;
-    --bg-list: #211f1c;
-    --bg-reading: #262421;
-    --bg-hover: #2b2925;
-    --bg-selected: #33302a;
-    --text: #dcd8cf;
-    --text-secondary: #a29c90;
-    --text-muted: #7d786d;
-    --border: #33302a;
-    --accent: #d08159;
-    --accent-soft: #d0815926;
-    --shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  }
-}
-
 * {
   margin: 0;
   padding: 0;

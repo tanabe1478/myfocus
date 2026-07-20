@@ -25,8 +25,18 @@ describe("settings window", () => {
 
     const retention = await $('[data-testid="retention-days"]');
     await retention.setValue("91");
+    const theme = await $('[data-testid="theme-select"]');
+    await browser.execute(() => {
+      const select = document.querySelector<HTMLSelectElement>('[data-testid="theme-select"]')!;
+      select.value = "warm-dark";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await expect(theme).toHaveValue("warm-dark");
     await $('[data-testid="save-settings"]').click();
     await expect($('[data-testid="settings-note"]')).toHaveText("保存しました");
+    await expect(
+      browser.tauri.execute(({ core }) => core.invoke<string>("get_setting", { key: "theme_id" }))
+    ).resolves.toBe("warm-dark");
 
     await $('[data-testid="close-settings"]').click();
     await browser.waitUntil(
@@ -42,6 +52,16 @@ describe("settings window", () => {
     await browser.switchToWindow(settingsHandle!);
     await settings.waitForDisplayed();
     await expect(retention).toHaveValue("91");
+    await expect(theme).toHaveValue("warm-dark");
+    await expect(browser.execute(() => document.documentElement.dataset.theme)).resolves.toBe(
+      "warm-dark"
+    );
+
+    await browser.switchToWindow(mainHandle);
+    await expect(browser.execute(() => document.documentElement.dataset.theme)).resolves.toBe(
+      "warm-dark"
+    );
+    await browser.switchToWindow(settingsHandle!);
 
     // Exercise the same native close request emitted by the title-bar ×.
     await browser.tauri.execute(({ core }) =>
