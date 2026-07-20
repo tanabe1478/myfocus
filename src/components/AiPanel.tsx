@@ -7,10 +7,13 @@ interface Props {
   busy: boolean;
   status: string | null;
   onSend: (text: string) => void;
+  onRecommend: (force?: boolean) => void;
   onAbort: () => void;
   onReset: () => void;
   onSubscribe: (url: string) => void;
   onOpenArticle: (articleId: number) => void;
+  feedback: Record<string, number>;
+  onFeedback: (articleId: number, value: -1 | 0 | 1) => void;
   onClose: () => void;
 }
 
@@ -49,10 +52,13 @@ export function AiPanel({
   busy,
   status,
   onSend,
+  onRecommend,
   onAbort,
   onReset,
   onSubscribe,
   onOpenArticle,
+  feedback,
+  onFeedback,
   onClose,
 }: Props) {
   const [input, setInput] = useState("");
@@ -96,8 +102,11 @@ export function AiPanel({
               購読記事を横断して探したり、未読の整理や読んでいる記事について相談できます。必要ならWebから新しい記事やフィードも探します。
             </p>
             <div className="ai-suggestions">
-              <button onClick={() => onSend("スターや最近読んだ記事の傾向も参考に、未読記事から今日読むべきものを5件選んで理由と一緒に教えて")}>
+              <button onClick={() => onRecommend(false)}>
                 今日読む記事を選んで
+              </button>
+              <button onClick={() => onRecommend(true)}>
+                おすすめを再生成
               </button>
               <button onClick={() => onSend("保存してある記事から、最近のAI関連の記事を探して要点を教えて")}>
                 保存記事からAI関連を探す
@@ -117,6 +126,8 @@ export function AiPanel({
             message={m}
             onSubscribe={onSubscribe}
             onOpenArticle={onOpenArticle}
+            feedback={feedback}
+            onFeedback={onFeedback}
           />
         ))}
         {status && <div className="ai-status">{status}</div>}
@@ -160,10 +171,14 @@ function MessageBubble({
   message,
   onSubscribe,
   onOpenArticle,
+  feedback,
+  onFeedback,
 }: {
   message: AiMessage;
   onSubscribe: (url: string) => void;
   onOpenArticle: (articleId: number) => void;
+  feedback: Record<string, number>;
+  onFeedback: (articleId: number, value: -1 | 0 | 1) => void;
 }) {
   const lines = message.text.split("\n");
   return (
@@ -171,10 +186,26 @@ function MessageBubble({
       {lines.map((line, i) => {
         const article = line.match(ARTICLE_LINE);
         if (article && message.role === "assistant") {
+          const articleId = Number(article[1]);
+          const value = feedback[String(articleId)] ?? 0;
           return (
             <div key={i} className="article-suggestion">
               <span className="article-suggestion-title">{article[2]}</span>
-              <button onClick={() => onOpenArticle(Number(article[1]))}>記事を開く</button>
+              <button
+                className={value === 1 ? "feedback-active" : ""}
+                title="興味あり"
+                onClick={() => onFeedback(articleId, value === 1 ? 0 : 1)}
+              >
+                👍
+              </button>
+              <button
+                className={value === -1 ? "feedback-active negative" : ""}
+                title="興味なし"
+                onClick={() => onFeedback(articleId, value === -1 ? 0 : -1)}
+              >
+                👎
+              </button>
+              <button onClick={() => onOpenArticle(articleId)}>記事を開く</button>
             </div>
           );
         }

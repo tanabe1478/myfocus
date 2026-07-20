@@ -28,6 +28,7 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [shortcuts, setShortcuts] = useState<KeyboardShortcuts>(DEFAULT_SHORTCUTS);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const [aiFeedback, setAiFeedbackState] = useState<Record<string, number>>({});
 
   // feeds-updated ハンドラから最新の選択記事を参照するための ref
   const selectedRef = useRef<Article | null>(null);
@@ -95,6 +96,7 @@ export default function App() {
 
   useEffect(() => {
     reloadFeeds();
+    api.listAiFeedback().then(setAiFeedbackState).catch(() => {});
   }, [reloadFeeds]);
 
   useEffect(() => {
@@ -327,6 +329,22 @@ export default function App() {
     [pi.send]
   );
 
+  const handleAiFeedback = useCallback(async (articleId: number, value: -1 | 0 | 1) => {
+    const key = String(articleId);
+    setAiFeedbackState((current) => {
+      const next = { ...current };
+      if (value === 0) delete next[key];
+      else next[key] = value;
+      return next;
+    });
+    try {
+      await api.setAiFeedback(articleId, value);
+    } catch (error) {
+      api.listAiFeedback().then(setAiFeedbackState).catch(() => {});
+      alert(`フィードバックを保存できませんでした: ${error}`);
+    }
+  }, []);
+
   const handleOpenAiArticle = useCallback(
     async (articleId: number) => {
       try {
@@ -420,10 +438,13 @@ export default function App() {
           busy={pi.busy}
           status={pi.status}
           onSend={pi.send}
+          onRecommend={pi.recommend}
           onAbort={pi.abort}
           onReset={pi.reset}
           onSubscribe={handleSubscribeSuggestion}
           onOpenArticle={handleOpenAiArticle}
+          feedback={aiFeedback}
+          onFeedback={handleAiFeedback}
           onClose={() => setAiOpen(false)}
         />
       ) : (

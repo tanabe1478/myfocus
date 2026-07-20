@@ -804,6 +804,24 @@ textarea {
   font-size: 11px;
 }
 
+.article-suggestion button[title^="興味"] {
+  padding: 3px 5px;
+  background: transparent;
+  color: var(--text-muted);
+  filter: grayscale(1);
+  opacity: 0.65;
+}
+
+.article-suggestion button.feedback-active {
+  background: color-mix(in srgb, #22a06b 18%, transparent);
+  filter: none;
+  opacity: 1;
+}
+
+.article-suggestion button.feedback-active.negative {
+  background: color-mix(in srgb, #d64545 18%, transparent);
+}
+
 .ai-input-row {
   display: flex;
   gap: 8px;

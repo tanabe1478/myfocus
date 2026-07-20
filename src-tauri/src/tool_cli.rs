@@ -7,6 +7,7 @@
 use crate::{db, fetcher};
 use rusqlite::Connection;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 const DEFAULT_LIMIT: i64 = 20;
@@ -23,6 +24,7 @@ struct ArticleResult {
     published_at: Option<i64>,
     read: bool,
     starred: bool,
+    feedback: Option<i8>,
     summary: Option<String>,
 }
 
@@ -62,11 +64,15 @@ struct FeedAffinity {
     feed: String,
     read_count: i64,
     starred_count: i64,
+    liked_count: i64,
+    disliked_count: i64,
 }
 
 #[derive(Serialize)]
 struct RecommendationContext {
     candidates: Vec<ArticleResult>,
+    liked: Vec<InterestArticle>,
+    disliked: Vec<InterestArticle>,
     starred: Vec<InterestArticle>,
     recently_read: Vec<InterestArticle>,
     feed_affinity: Vec<FeedAffinity>,
@@ -86,14 +92,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
             let articles =
                 db::search_articles(&conn, &query, DEFAULT_LIMIT).map_err(|e| e.to_string())?;
-            print_json(&articles.into_iter().map(article_result).collect::<Vec<_>>())
+            print_json(
+                &articles
+                    .into_iter()
+                    .map(|article| article_result(article, None))
+                    .collect::<Vec<_>>(),
+            )
         }
         "recent" => {
             let unread_only = args.iter().any(|arg| arg == "--unread");
             let mut articles = db::list_articles(&conn, None, None, unread_only, false)
                 .map_err(|e| e.to_string())?;
             articles.truncate(DEFAULT_LIMIT as usize);
-            print_json(&articles.into_iter().map(article_result).collect::<Vec<_>>())
+            print_json(
+                &articles
+                    .into_iter()
+                    .map(|article| article_result(article, None))
+                    .collect::<Vec<_>>(),
+            )
         }
         "recommend" => print_json(&recommendation_context(&conn)?),
         "article" => {
@@ -170,9 +186,23 @@ pub fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn recommendation_context(conn: &Connection) -> Result<RecommendationContext, String> {
-    let mut candidates =
-        db::list_articles(conn, None, None, true, false).map_err(|e| e.to_string())?;
-    candidates.truncate(RECOMMENDATION_CANDIDATE_LIMIT);
+    let feedback: HashMap<i64, i8> = db::list_ai_feedback(conn)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
+    let candidates = db::list_articles(conn, None, None, true, false)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|article| feedback.get(&article.id) != Some(&-1))
+        .take(RECOMMENDATION_CANDIDATE_LIMIT)
+        .map(|article| {
+            let value = feedback.get(&article.id).copied();
+            article_result(article, value)
+        })
+        .collect();
+
+    let liked = feedback_articles(conn, 1)?;
+    let disliked = feedback_articles(conn, -1)?;
 
     let mut starred = conn
         .prepare(
@@ -220,11 +250,15 @@ fn recommendation_context(conn: &Connection) -> Result<RecommendationContext, St
         .prepare(
             "SELECT f.title,
                     SUM(CASE WHEN a.read = 1 THEN 1 ELSE 0 END) AS read_count,
-                    SUM(CASE WHEN a.starred = 1 THEN 1 ELSE 0 END) AS starred_count
-             FROM articles a JOIN feeds f ON f.id = a.feed_id
-             WHERE a.read = 1 OR a.starred = 1
+                    SUM(CASE WHEN a.starred = 1 THEN 1 ELSE 0 END) AS starred_count,
+                    SUM(CASE WHEN af.value = 1 THEN 1 ELSE 0 END) AS liked_count,
+                    SUM(CASE WHEN af.value = -1 THEN 1 ELSE 0 END) AS disliked_count
+             FROM articles a
+             JOIN feeds f ON f.id = a.feed_id
+             LEFT JOIN article_ai_feedback af ON af.article_id = a.id
+             WHERE a.read = 1 OR a.starred = 1 OR af.value IS NOT NULL
              GROUP BY f.id, f.title
-             ORDER BY starred_count DESC, read_count DESC
+             ORDER BY liked_count DESC, starred_count DESC, read_count DESC
              LIMIT 15",
         )
         .map_err(|e| e.to_string())?;
@@ -234,6 +268,8 @@ fn recommendation_context(conn: &Connection) -> Result<RecommendationContext, St
                 feed: row.get(0)?,
                 read_count: row.get(1)?,
                 starred_count: row.get(2)?,
+                liked_count: row.get(3)?,
+                disliked_count: row.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -241,14 +277,45 @@ fn recommendation_context(conn: &Connection) -> Result<RecommendationContext, St
         .map_err(|e| e.to_string())?;
 
     Ok(RecommendationContext {
-        candidates: candidates.into_iter().map(article_result).collect(),
+        candidates,
+        liked,
+        disliked,
         starred,
         recently_read,
         feed_affinity,
     })
 }
 
-fn article_result(article: db::Article) -> ArticleResult {
+fn feedback_articles(conn: &Connection, value: i8) -> Result<Vec<InterestArticle>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.id, f.title, a.title, a.published_at
+             FROM article_ai_feedback af
+             JOIN articles a ON a.id = af.article_id
+             JOIN feeds f ON f.id = a.feed_id
+             WHERE af.value = ?1
+             ORDER BY af.updated_at DESC LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![value, RECOMMENDATION_HISTORY_LIMIT as i64],
+            |row| {
+                Ok(InterestArticle {
+                    id: row.get(0)?,
+                    feed: row.get(1)?,
+                    title: row.get(2)?,
+                    published_at: row.get(3)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string());
+    rows
+}
+
+fn article_result(article: db::Article, feedback: Option<i8>) -> ArticleResult {
     ArticleResult {
         id: article.id,
         feed: article.feed_title,
@@ -257,6 +324,7 @@ fn article_result(article: db::Article) -> ArticleResult {
         published_at: article.published_at,
         read: article.read,
         starred: article.starred,
+        feedback,
         summary: article.summary,
     }
 }
@@ -292,14 +360,21 @@ mod tests {
             [],
         )
         .unwrap();
+        db::set_ai_feedback(&conn, 1, 1).unwrap();
+        db::set_ai_feedback(&conn, 3, -1).unwrap();
 
         let context = recommendation_context(&conn).unwrap();
         assert_eq!(context.candidates.len(), 1);
         assert_eq!(context.candidates[0].id, 1);
+        assert_eq!(context.candidates[0].feedback, Some(1));
+        assert_eq!(context.liked[0].id, 1);
+        assert_eq!(context.disliked[0].id, 3);
         assert_eq!(context.starred[0].id, 2);
         assert_eq!(context.recently_read[0].id, 2);
         assert_eq!(context.feed_affinity[0].feed, "Example");
         assert_eq!(context.feed_affinity[0].read_count, 2);
         assert_eq!(context.feed_affinity[0].starred_count, 1);
+        assert_eq!(context.feed_affinity[0].liked_count, 1);
+        assert_eq!(context.feed_affinity[0].disliked_count, 1);
     }
 }

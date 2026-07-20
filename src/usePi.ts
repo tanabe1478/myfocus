@@ -4,6 +4,10 @@ import { aiAbort, aiNewSession, aiPrompt, getSetting, setSetting } from "./api";
 import type { AiMessage } from "./types";
 
 const CONVERSATION_KEY = "ai_conversation";
+const RECOMMENDATION_CACHE_KEY = "ai_recommendation_cache";
+const RECOMMENDATION_CACHE_MS = 12 * 60 * 60 * 1000;
+const RECOMMENDATION_PROMPT =
+  "スター、興味あり／なし、最近読んだ記事の傾向も参考に、未読記事から今日読むべきものを5件選んで理由と一緒に教えて";
 // piに文脈として渡す履歴の上限（文字数）
 const CONTEXT_CHAR_LIMIT = 8000;
 
@@ -34,6 +38,8 @@ export function usePi() {
   // piプロセスが会話の記憶を持っていない状態（起動直後・プロセス死亡後）
   const needsContext = useRef(false);
   const messagesRef = useRef<AiMessage[]>([]);
+  const pendingRecommendation = useRef(false);
+  const assistantText = useRef("");
   messagesRef.current = messages;
 
   // 保存済みの会話を復元する
@@ -70,10 +76,14 @@ export function usePi() {
         case "agent_start":
           setBusy(true);
           hadTurn.current = false;
+          assistantText.current = "";
           setMessages((m) => [...m, { role: "assistant", text: "" }]);
           break;
         case "turn_start":
           // separate turns (before/after tool calls) with a blank line
+          if (hadTurn.current && assistantText.current) {
+            assistantText.current += "\n\n";
+          }
           if (hadTurn.current) {
             setMessages((m) => {
               const last = m[m.length - 1];
@@ -88,6 +98,7 @@ export function usePi() {
         case "message_update": {
           const delta = ev.assistantMessageEvent;
           if (delta?.type === "text_delta" && typeof delta.delta === "string") {
+            assistantText.current += delta.delta;
             setMessages((m) => {
               const last = m[m.length - 1];
               if (last?.role !== "assistant") return m;
@@ -109,6 +120,16 @@ export function usePi() {
         case "agent_end":
           setBusy(false);
           setStatus(null);
+          if (pendingRecommendation.current && assistantText.current.trim()) {
+            setSetting(
+              RECOMMENDATION_CACHE_KEY,
+              JSON.stringify({
+                createdAt: Date.now(),
+                text: assistantText.current.trim(),
+              })
+            ).catch(() => {});
+          }
+          pendingRecommendation.current = false;
           // drop an empty assistant bubble (e.g. aborted before any text)
           setMessages((m) => {
             const last = m[m.length - 1];
@@ -124,6 +145,7 @@ export function usePi() {
     const unlistenClosed = listen("pi-closed", () => {
       setBusy(false);
       setStatus(null);
+      pendingRecommendation.current = false;
       // piが返答なしで終了した場合はstderrをエラーとして表示する
       setMessages((m) => {
         const last = m[m.length - 1];
@@ -165,10 +187,39 @@ export function usePi() {
     try {
       await aiPrompt(prompt);
     } catch (err) {
+      pendingRecommendation.current = false;
       setMessages((m) => [...m, { role: "assistant", text: `エラー: ${err}` }]);
       setBusy(false);
     }
   }, []);
+
+  const recommend = useCallback(async (force = false) => {
+    if (!force) {
+      try {
+        const raw = await getSetting(RECOMMENDATION_CACHE_KEY);
+        if (raw) {
+          const cached = JSON.parse(raw) as { createdAt?: number; text?: string };
+          if (
+            typeof cached.createdAt === "number" &&
+            typeof cached.text === "string" &&
+            cached.text.trim() &&
+            Date.now() - cached.createdAt < RECOMMENDATION_CACHE_MS
+          ) {
+            setMessages((m) => [
+              ...m,
+              { role: "user", text: RECOMMENDATION_PROMPT },
+              { role: "assistant", text: cached.text! },
+            ]);
+            return;
+          }
+        }
+      } catch {
+        // Ignore malformed or unavailable caches and generate a fresh response.
+      }
+    }
+    pendingRecommendation.current = true;
+    await send(RECOMMENDATION_PROMPT);
+  }, [send]);
 
   const abort = useCallback(async () => {
     try {
@@ -183,6 +234,7 @@ export function usePi() {
     setBusy(false);
     setStatus(null);
     needsContext.current = false;
+    pendingRecommendation.current = false;
     setSetting(CONVERSATION_KEY, "[]").catch(() => {});
     try {
       await aiNewSession();
@@ -191,5 +243,5 @@ export function usePi() {
     }
   }, []);
 
-  return { messages, busy, status, send, abort, reset };
+  return { messages, busy, status, send, recommend, abort, reset };
 }

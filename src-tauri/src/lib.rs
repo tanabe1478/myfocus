@@ -9,6 +9,7 @@ use db::{Article, Feed};
 use pi_bridge::PiBridge;
 use rusqlite::Connection;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -139,6 +140,25 @@ fn set_setting(
     db::set_setting(&conn, &key, &value).map_err(|e| e.to_string())?;
     let _ = app.emit("settings-updated", &key);
     Ok(())
+}
+
+#[tauri::command]
+fn list_ai_feedback(state: State<AppState>) -> Result<HashMap<i64, i8>, String> {
+    let conn = lock_db(&state)?;
+    db::list_ai_feedback(&conn)
+        .map(|items| items.into_iter().collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_ai_feedback(state: State<AppState>, article_id: i64, value: i8) -> Result<(), String> {
+    if ![-1, 0, 1].contains(&value) {
+        return Err("フィードバック値が不正です".to_string());
+    }
+    let conn = lock_db(&state)?;
+    db::set_ai_feedback(&conn, article_id, value).map_err(|e| e.to_string())?;
+    // Interest changes invalidate the daily recommendation response.
+    db::set_setting(&conn, "ai_recommendation_cache", "").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -640,6 +660,8 @@ pub fn run() {
             fuzzy_search,
             get_setting,
             set_setting,
+            list_ai_feedback,
+            set_ai_feedback,
             open_settings,
             close_settings,
             is_settings_visible,

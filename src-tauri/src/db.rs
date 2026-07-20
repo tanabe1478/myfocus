@@ -80,6 +80,12 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             PRIMARY KEY (feed_id, guid)
         );
 
+        CREATE TABLE IF NOT EXISTS article_ai_feedback (
+            article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+            value INTEGER NOT NULL CHECK(value IN (-1, 1)),
+            updated_at INTEGER NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_articles_feed ON articles(feed_id, published_at DESC);
         CREATE INDEX IF NOT EXISTS idx_articles_read ON articles(read, published_at DESC);
         "#,
@@ -215,6 +221,32 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Resul
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![key, value],
     )?;
+    Ok(())
+}
+
+pub fn list_ai_feedback(conn: &Connection) -> rusqlite::Result<Vec<(i64, i8)>> {
+    let mut stmt = conn.prepare("SELECT article_id, value FROM article_ai_feedback")?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect();
+    rows
+}
+
+pub fn set_ai_feedback(conn: &Connection, article_id: i64, value: i8) -> rusqlite::Result<()> {
+    if value == 0 {
+        conn.execute(
+            "DELETE FROM article_ai_feedback WHERE article_id = ?1",
+            [article_id],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO article_ai_feedback (article_id, value, updated_at)
+             VALUES (?1, ?2, strftime('%s','now'))
+             ON CONFLICT(article_id) DO UPDATE SET
+               value = excluded.value, updated_at = excluded.updated_at",
+            params![article_id, value],
+        )?;
+    }
     Ok(())
 }
 

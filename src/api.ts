@@ -26,6 +26,12 @@ export const getSetting = (key: string) =>
 export const setSetting = (key: string, value: string) =>
   invoke<void>("set_setting", { key, value });
 
+export const listAiFeedback = () =>
+  invoke<Record<string, number>>("list_ai_feedback");
+
+export const setAiFeedback = (articleId: number, value: -1 | 0 | 1) =>
+  invoke<void>("set_ai_feedback", { articleId, value });
+
 export const openSettings = () => invoke<void>("open_settings");
 export const closeSettings = () => invoke<void>("close_settings");
 
