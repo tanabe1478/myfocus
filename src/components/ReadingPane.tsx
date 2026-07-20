@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Article } from "../types";
 import { relativeTime } from "../format";
 import { openBackground } from "../api";
+import { MarkdownContent } from "./MarkdownContent";
 
 interface Props {
   article: Article | null;
@@ -165,7 +166,10 @@ export function ReadingPane({
                   {summarizing ? "再生成中…" : "再生成"}
                 </button>
               </div>
-              <div className="article-ai-summary-text">{article.ai_summary}</div>
+              <MarkdownContent
+                className="article-ai-summary-text markdown-content"
+                text={article.ai_summary}
+              />
               {article.ai_summary_model && (
                 <div className="article-ai-summary-model">{article.ai_summary_model}</div>
               )}
