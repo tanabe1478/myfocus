@@ -33,6 +33,9 @@ export function usePi() {
   const [messages, setMessages] = useState<AiMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [recommendationSource, setRecommendationSource] = useState<
+    "cache" | "generated" | null
+  >(null);
   const hadTurn = useRef(false);
   const stderrLines = useRef<string[]>([]);
   // piプロセスが会話の記憶を持っていない状態（起動直後・プロセス死亡後）
@@ -121,6 +124,7 @@ export function usePi() {
           setBusy(false);
           setStatus(null);
           if (pendingRecommendation.current && assistantText.current.trim()) {
+            setRecommendationSource("generated");
             setSetting(
               RECOMMENDATION_CACHE_KEY,
               JSON.stringify({
@@ -141,6 +145,9 @@ export function usePi() {
     });
     const unlistenErr = listen<string>("pi-error", (e) => {
       stderrLines.current = [...stderrLines.current.slice(-9), e.payload];
+    });
+    const unlistenRecommendationCache = listen("recommendation-cache-invalidated", () => {
+      setRecommendationSource(null);
     });
     const unlistenClosed = listen("pi-closed", () => {
       setBusy(false);
@@ -169,6 +176,7 @@ export function usePi() {
     return () => {
       unlisten.then((f) => f());
       unlistenErr.then((f) => f());
+      unlistenRecommendationCache.then((f) => f());
       unlistenClosed.then((f) => f());
     };
   }, []);
@@ -176,6 +184,7 @@ export function usePi() {
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    if (!pendingRecommendation.current) setRecommendationSource(null);
     const history = messagesRef.current;
     // piが記憶を持たない状態なら、復元済み履歴を文脈として先頭に添える
     const prompt =
@@ -205,6 +214,7 @@ export function usePi() {
             cached.text.trim() &&
             Date.now() - cached.createdAt < RECOMMENDATION_CACHE_MS
           ) {
+            setRecommendationSource("cache");
             setMessages((m) => [
               ...m,
               { role: "user", text: RECOMMENDATION_PROMPT },
@@ -233,6 +243,7 @@ export function usePi() {
     setMessages([]);
     setBusy(false);
     setStatus(null);
+    setRecommendationSource(null);
     needsContext.current = false;
     pendingRecommendation.current = false;
     setSetting(CONVERSATION_KEY, "[]").catch(() => {});
@@ -243,5 +254,14 @@ export function usePi() {
     }
   }, []);
 
-  return { messages, busy, status, send, recommend, abort, reset };
+  return {
+    messages,
+    busy,
+    status,
+    recommendationSource,
+    send,
+    recommend,
+    abort,
+    reset,
+  };
 }

@@ -419,6 +419,10 @@ export default function App() {
         onAddFeed={handleAddFeed}
         onRemoveFeed={handleRemoveFeed}
         onRefresh={handleRefresh}
+        onOpenBriefing={() => {
+          setAiOpen(true);
+          if (!pi.busy) pi.recommend(false);
+        }}
         onImportOpml={api.importOpml}
       />
       {selection.kind === "hn" ? (
@@ -448,6 +452,7 @@ export default function App() {
           messages={pi.messages}
           busy={pi.busy}
           status={pi.status}
+          recommendationSource={pi.recommendationSource}
           onSend={pi.send}
           onRecommend={pi.recommend}
           onAbort={pi.abort}

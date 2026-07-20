@@ -320,6 +320,7 @@ async fn add_feed(app: AppHandle, url: String) -> Result<Feed, String> {
         )
         .map_err(|e| e.to_string())?;
         db::insert_articles(&mut conn, feed_id, &fetched.articles).map_err(|e| e.to_string())?;
+        db::set_setting(&conn, "ai_recommendation_cache", "").map_err(|e| e.to_string())?;
         db::list_feeds(&conn)
             .map_err(|e| e.to_string())?
             .into_iter()
@@ -383,6 +384,12 @@ async fn refresh_all_inner(app: &AppHandle) -> Result<RefreshResult, String> {
         let _ = app.emit("feeds-updated", ());
     }
     let _ = app.emit("feeds-updated", ());
+    if new_articles > 0 {
+        let conn = lock_db(&state)?;
+        // A briefing generated before this refresh no longer covers the inbox.
+        db::set_setting(&conn, "ai_recommendation_cache", "").map_err(|e| e.to_string())?;
+        let _ = app.emit("recommendation-cache-invalidated", new_articles);
+    }
     Ok(RefreshResult {
         new_articles,
         failed,

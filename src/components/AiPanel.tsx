@@ -6,6 +6,7 @@ interface Props {
   messages: AiMessage[];
   busy: boolean;
   status: string | null;
+  recommendationSource: "cache" | "generated" | null;
   onSend: (text: string) => void;
   onRecommend: (force?: boolean) => void;
   onAbort: () => void;
@@ -51,6 +52,7 @@ export function AiPanel({
   messages,
   busy,
   status,
+  recommendationSource,
   onSend,
   onRecommend,
   onAbort,
@@ -79,6 +81,11 @@ export function AiPanel({
     <aside className="ai-panel">
       <div className="pane-header">
         <span className="pane-title">✦ アシスタント</span>
+        {recommendationSource && (
+          <span className="ai-cache-badge">
+            {recommendationSource === "cache" ? "保存済みブリーフィング" : "最新ブリーフィング"}
+          </span>
+        )}
         <button
           className="icon-button"
           title="会話をリセットして最初から"

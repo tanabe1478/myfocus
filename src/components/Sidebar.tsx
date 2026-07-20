@@ -23,6 +23,7 @@ interface Props {
   onAddFeed: (url: string) => Promise<void>;
   onRemoveFeed: (feedId: number) => void;
   onRefresh: () => void;
+  onOpenBriefing: () => void;
   onImportOpml: (content: string) => Promise<number>;
 }
 
@@ -37,6 +38,7 @@ export function Sidebar({
   onAddFeed,
   onRemoveFeed,
   onRefresh,
+  onOpenBriefing,
   onImportOpml,
 }: Props) {
   const [adding, setAdding] = useState(false);
@@ -144,6 +146,12 @@ export function Sidebar({
           label="スター付き"
           selected={isSelected({ kind: "starred" })}
           onClick={() => onSelect({ kind: "starred" })}
+        />
+        <SidebarRow
+          label="✦ 今日のブリーフィング"
+          selected={false}
+          testId="open-briefing"
+          onClick={onOpenBriefing}
         />
       </nav>
 
@@ -324,6 +332,7 @@ function SidebarRow({
   selected,
   onClick,
   onRemove,
+  testId,
 }: {
   label: string;
   count?: number;
@@ -331,10 +340,12 @@ function SidebarRow({
   selected: boolean;
   onClick: () => void;
   onRemove?: () => void;
+  testId?: string;
 }) {
   return (
     <div
       className={`sidebar-row ${selected ? "selected" : ""} ${error ? "has-error" : ""}`}
+      data-testid={testId}
       onClick={onClick}
     >
       <span className="sidebar-row-label" title={label}>
