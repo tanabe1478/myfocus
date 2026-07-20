@@ -5,6 +5,7 @@ export const THEME_SETTING_KEY = "theme_id";
 export const CUSTOM_THEMES_SETTING_KEY = "custom_themes";
 const THEME_CACHE_KEY = "myfocus.theme";
 const CUSTOM_THEMES_CACHE_KEY = "myfocus.customThemes";
+let applyGeneration = 0;
 
 export type ThemeAppearance = "light" | "dark";
 
@@ -138,6 +139,7 @@ export function resolveThemeTokens(theme: ThemeDefinition): ThemeTokens {
 }
 
 export function applyTheme(theme: ThemeDefinition): void {
+  applyGeneration += 1;
   const root = document.documentElement;
   const tokens = resolveThemeTokens(theme);
   for (const [key, cssName] of Object.entries(CSS_TOKEN_NAMES) as [
@@ -179,11 +181,15 @@ export async function loadAndApplyTheme(): Promise<{
   theme: ThemeDefinition;
   catalog: ThemeDefinition[];
 }> {
+  const generation = applyGeneration;
   const [id, catalog] = await Promise.all([
     getSetting(THEME_SETTING_KEY).catch(() => null),
     loadThemeCatalog(),
   ]);
-  return { theme: applyById(id, catalog), catalog };
+  const theme = catalog.find((candidate) => candidate.id === id) ?? BUILTIN_THEMES[0];
+  // Do not let an older async DB read overwrite a theme the user just chose.
+  if (generation === applyGeneration) applyById(theme.id, catalog);
+  return { theme, catalog };
 }
 
 export async function saveTheme(themeId: string): Promise<void> {

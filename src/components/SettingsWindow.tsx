@@ -27,6 +27,7 @@ export function SettingsWindow() {
   const [shortcuts, setShortcuts] = useState<KeyboardShortcuts>(DEFAULT_SHORTCUTS);
   const [themeId, setThemeId] = useState(BUILTIN_THEMES[0].id);
   const [themes, setThemes] = useState<ThemeDefinition[]>(BUILTIN_THEMES);
+  const themeIdRef = useRef(BUILTIN_THEMES[0].id);
   const themeTouched = useRef(false);
   const [note, setNote] = useState<string | null>(null);
 
@@ -36,7 +37,10 @@ export function SettingsWindow() {
     getSetting("summary_model").then((v) => setSummaryModel(v || DEFAULT_TRANSLATE_MODEL));
     getSetting("keyboard_shortcuts").then((v) => setShortcuts(parseShortcuts(v)));
     loadAndApplyTheme().then(({ theme, catalog }) => {
-      if (!themeTouched.current) setThemeId(theme.id);
+      if (!themeTouched.current) {
+        themeIdRef.current = theme.id;
+        setThemeId(theme.id);
+      }
       setThemes(catalog);
     });
     listPiModels().then(setModels).catch(() => setModels([]));
@@ -58,7 +62,7 @@ export function SettingsWindow() {
       setSetting("translate_model", model),
       setSetting("summary_model", summaryModel),
       setSetting("keyboard_shortcuts", JSON.stringify(shortcuts)),
-      saveTheme(themeId),
+      saveTheme(themeIdRef.current),
     ]);
     setNote("保存しました");
   };
@@ -85,10 +89,15 @@ export function SettingsWindow() {
             data-testid="theme-select"
             value={themeId}
             onChange={(e) => {
+              const id = e.target.value;
               themeTouched.current = true;
-              setThemeId(e.target.value);
-              const theme = themes.find((candidate) => candidate.id === e.target.value);
+              themeIdRef.current = id;
+              setThemeId(id);
+              const theme = themes.find((candidate) => candidate.id === id);
               if (theme) applyTheme(theme);
+              saveTheme(id)
+                .then(() => setNote("テーマを保存しました"))
+                .catch((error) => setNote(`テーマを保存できませんでした: ${error}`));
             }}
           >
             {themes.map((theme) => (
@@ -98,7 +107,7 @@ export function SettingsWindow() {
             ))}
           </select>
           <div className="settings-hint">
-            選択するとこの画面でプレビューされ、「保存」で全ウィンドウへ反映されます。
+            選択するとすぐに保存され、すべてのウィンドウへ反映されます。
           </div>
           <ThemeEditor
             themes={themes}
@@ -106,6 +115,7 @@ export function SettingsWindow() {
             onThemesChange={setThemes}
             onSelectedChange={(id) => {
               themeTouched.current = true;
+              themeIdRef.current = id;
               setThemeId(id);
             }}
             onNote={setNote}
