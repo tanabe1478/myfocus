@@ -775,11 +775,22 @@ textarea {
   align-self: stretch;
 }
 
-.ai-link {
-  color: var(--accent, #b3543f);
-  text-decoration: underline;
-  cursor: pointer;
-  word-break: break-all;
+.ai-message .markdown-content {
+  white-space: normal;
+}
+
+.ai-message .markdown-content + .article-suggestion,
+.ai-message .markdown-content + .feed-suggestion,
+.ai-message .article-suggestion + .markdown-content,
+.ai-message .feed-suggestion + .markdown-content {
+  margin-top: 8px;
+}
+
+.ai-message .markdown-content h1,
+.ai-message .markdown-content h2,
+.ai-message .markdown-content h3 {
+  margin: 8px 0 4px;
+  font-size: 1em;
 }
 
 .ai-status {

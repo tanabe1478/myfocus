@@ -5,7 +5,7 @@ describe("daily briefing", () => {
         key: "ai_recommendation_cache",
         value: JSON.stringify({
           createdAt: Date.now(),
-          text: "ARTICLE: 999 | Cached recommendation\nA reason to read it.",
+          text: "**Today's picks**\n\nARTICLE: 999 | Cached recommendation\nA reason to read it.",
         }),
       })
     );
@@ -14,6 +14,7 @@ describe("daily briefing", () => {
     await briefing.waitForDisplayed();
     await briefing.click();
 
+    await expect($('.ai-message strong')).toHaveText("Today's picks");
     await expect($('.article-suggestion-title')).toHaveText("Cached recommendation");
     await expect($('.ai-cache-badge')).toHaveText("保存済みブリーフィング");
   });

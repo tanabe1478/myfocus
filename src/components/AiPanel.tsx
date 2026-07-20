@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { AiMessage } from "../types";
+import { MarkdownContent } from "./MarkdownContent";
 
 interface Props {
   messages: AiMessage[];
@@ -20,33 +20,6 @@ interface Props {
 
 const FEED_LINE = /^FEED:\s*(https?:\/\/\S+)\s*$/;
 const ARTICLE_LINE = /^ARTICLE:\s*(\d+)\s*\|\s*(.+)\s*$/;
-const URL_PATTERN = /https?:\/\/[^\s<>"')\]]+/g;
-
-/// テキスト中のURLを外部ブラウザで開くリンクに変換する
-function linkify(text: string): React.ReactNode[] {
-  const nodes: React.ReactNode[] = [];
-  let last = 0;
-  for (const m of text.matchAll(URL_PATTERN)) {
-    const url = m[0];
-    if (m.index > last) nodes.push(text.slice(last, m.index));
-    nodes.push(
-      <a
-        key={`${m.index}-${url}`}
-        href={url}
-        className="ai-link"
-        onClick={(e) => {
-          e.preventDefault();
-          openUrl(url);
-        }}
-      >
-        {url}
-      </a>
-    );
-    last = m.index + url.length;
-  }
-  if (last < text.length) nodes.push(text.slice(last));
-  return nodes;
-}
 
 export function AiPanel({
   messages,
@@ -187,46 +160,66 @@ function MessageBubble({
   feedback: Record<string, number>;
   onFeedback: (articleId: number, value: -1 | 0 | 1) => void;
 }) {
-  const lines = message.text.split("\n");
-  return (
-    <div className={`ai-message ${message.role}`}>
-      {lines.map((line, i) => {
-        const article = line.match(ARTICLE_LINE);
-        if (article && message.role === "assistant") {
-          const articleId = Number(article[1]);
-          const value = feedback[String(articleId)] ?? 0;
-          return (
-            <div key={i} className="article-suggestion">
-              <span className="article-suggestion-title">{article[2]}</span>
-              <button
-                className={value === 1 ? "feedback-active" : ""}
-                title="興味あり"
-                onClick={() => onFeedback(articleId, value === 1 ? 0 : 1)}
-              >
-                👍
-              </button>
-              <button
-                className={value === -1 ? "feedback-active negative" : ""}
-                title="興味なし"
-                onClick={() => onFeedback(articleId, value === -1 ? 0 : -1)}
-              >
-                👎
-              </button>
-              <button onClick={() => onOpenArticle(articleId)}>記事を開く</button>
-            </div>
-          );
-        }
-        const feed = line.match(FEED_LINE);
-        if (feed && message.role === "assistant") {
-          return (
-            <div key={i} className="feed-suggestion">
-              <span className="feed-suggestion-url">{feed[1]}</span>
-              <button onClick={() => onSubscribe(feed[1])}>購読</button>
-            </div>
-          );
-        }
-        return <div key={i}>{line ? linkify(line) : " "}</div>;
-      })}
-    </div>
-  );
+  const blocks: ReactNode[] = [];
+  let markdownLines: string[] = [];
+  let inFence = false;
+  let key = 0;
+  const flushMarkdown = () => {
+    const text = markdownLines.join("\n").trim();
+    if (text) {
+      blocks.push(
+        <MarkdownContent key={`markdown-${key++}`} className="markdown-content" text={text} />
+      );
+    }
+    markdownLines = [];
+  };
+
+  for (const line of message.text.split("\n")) {
+    const fence = /^\s*(```|~~~)/.test(line);
+    const article = !inFence && message.role === "assistant" ? line.match(ARTICLE_LINE) : null;
+    const feed = !inFence && message.role === "assistant" ? line.match(FEED_LINE) : null;
+
+    if (article) {
+      flushMarkdown();
+      const articleId = Number(article[1]);
+      const value = feedback[String(articleId)] ?? 0;
+      blocks.push(
+        <div key={`article-${key++}`} className="article-suggestion">
+          <span className="article-suggestion-title">{article[2]}</span>
+          <button
+            className={value === 1 ? "feedback-active" : ""}
+            title="興味あり"
+            onClick={() => onFeedback(articleId, value === 1 ? 0 : 1)}
+          >
+            👍
+          </button>
+          <button
+            className={value === -1 ? "feedback-active negative" : ""}
+            title="興味なし"
+            onClick={() => onFeedback(articleId, value === -1 ? 0 : -1)}
+          >
+            👎
+          </button>
+          <button onClick={() => onOpenArticle(articleId)}>記事を開く</button>
+        </div>
+      );
+      continue;
+    }
+    if (feed) {
+      flushMarkdown();
+      blocks.push(
+        <div key={`feed-${key++}`} className="feed-suggestion">
+          <span className="feed-suggestion-url">{feed[1]}</span>
+          <button onClick={() => onSubscribe(feed[1])}>購読</button>
+        </div>
+      );
+      continue;
+    }
+
+    markdownLines.push(line);
+    if (fence) inFence = !inFence;
+  }
+  flushMarkdown();
+
+  return <div className={`ai-message ${message.role}`}>{blocks}</div>;
 }
