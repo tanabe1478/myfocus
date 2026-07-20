@@ -30,3 +30,6 @@ feed-rs = "2.4.0"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 
+[dev-dependencies]
+tempfile = "3"
+

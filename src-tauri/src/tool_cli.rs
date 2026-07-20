@@ -5,10 +5,13 @@
 //! tool without giving the model arbitrary SQL access.
 
 use crate::{db, fetcher};
+use rusqlite::Connection;
 use serde::Serialize;
 use std::path::Path;
 
 const DEFAULT_LIMIT: i64 = 20;
+const RECOMMENDATION_CANDIDATE_LIMIT: usize = 50;
+const RECOMMENDATION_HISTORY_LIMIT: usize = 20;
 const MAX_ARTICLE_CHARS: usize = 15_000;
 
 #[derive(Serialize)]
@@ -46,6 +49,29 @@ struct Stats {
     starred: i64,
 }
 
+#[derive(Serialize)]
+struct InterestArticle {
+    id: i64,
+    feed: String,
+    title: String,
+    published_at: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct FeedAffinity {
+    feed: String,
+    read_count: i64,
+    starred_count: i64,
+}
+
+#[derive(Serialize)]
+struct RecommendationContext {
+    candidates: Vec<ArticleResult>,
+    starred: Vec<InterestArticle>,
+    recently_read: Vec<InterestArticle>,
+    feed_affinity: Vec<FeedAffinity>,
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
     let db_path = std::env::var("MYFOCUS_DB_PATH")
         .map_err(|_| "MYFOCUS_DB_PATHが設定されていません".to_string())?;
@@ -69,6 +95,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             articles.truncate(DEFAULT_LIMIT as usize);
             print_json(&articles.into_iter().map(article_result).collect::<Vec<_>>())
         }
+        "recommend" => print_json(&recommendation_context(&conn)?),
         "article" => {
             let id = args
                 .get(1)
@@ -134,12 +161,91 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "myfocus local archive commands:\n  search <query>\n  recent [--unread]\n  article <id>\n  feeds\n  stats"
+                "myfocus local archive commands:\n  search <query>\n  recent [--unread]\n  recommend\n  article <id>\n  feeds\n  stats"
             );
             Ok(())
         }
         _ => Err(format!("不明なコマンド: {command}")),
     }
+}
+
+fn recommendation_context(conn: &Connection) -> Result<RecommendationContext, String> {
+    let mut candidates =
+        db::list_articles(conn, None, None, true, false).map_err(|e| e.to_string())?;
+    candidates.truncate(RECOMMENDATION_CANDIDATE_LIMIT);
+
+    let mut starred = conn
+        .prepare(
+            "SELECT a.id, f.title, a.title, a.published_at
+             FROM articles a JOIN feeds f ON f.id = a.feed_id
+             WHERE a.starred = 1
+             ORDER BY COALESCE(a.published_at, 0) DESC LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let starred = starred
+        .query_map([RECOMMENDATION_HISTORY_LIMIT as i64], |row| {
+            Ok(InterestArticle {
+                id: row.get(0)?,
+                feed: row.get(1)?,
+                title: row.get(2)?,
+                published_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let mut recently_read = conn
+        .prepare(
+            "SELECT a.id, f.title, a.title, a.published_at
+             FROM articles a JOIN feeds f ON f.id = a.feed_id
+             WHERE a.read = 1
+             ORDER BY COALESCE(a.published_at, 0) DESC LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let recently_read = recently_read
+        .query_map([RECOMMENDATION_HISTORY_LIMIT as i64], |row| {
+            Ok(InterestArticle {
+                id: row.get(0)?,
+                feed: row.get(1)?,
+                title: row.get(2)?,
+                published_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let mut affinity = conn
+        .prepare(
+            "SELECT f.title,
+                    SUM(CASE WHEN a.read = 1 THEN 1 ELSE 0 END) AS read_count,
+                    SUM(CASE WHEN a.starred = 1 THEN 1 ELSE 0 END) AS starred_count
+             FROM articles a JOIN feeds f ON f.id = a.feed_id
+             WHERE a.read = 1 OR a.starred = 1
+             GROUP BY f.id, f.title
+             ORDER BY starred_count DESC, read_count DESC
+             LIMIT 15",
+        )
+        .map_err(|e| e.to_string())?;
+    let feed_affinity = affinity
+        .query_map([], |row| {
+            Ok(FeedAffinity {
+                feed: row.get(0)?,
+                read_count: row.get(1)?,
+                starred_count: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(RecommendationContext {
+        candidates: candidates.into_iter().map(article_result).collect(),
+        starred,
+        recently_read,
+        feed_affinity,
+    })
 }
 
 fn article_result(article: db::Article) -> ArticleResult {
@@ -161,4 +267,39 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
         serde_json::to_string(value).map_err(|e| e.to_string())?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recommendation_context_contains_candidates_and_interest_signals() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open(&dir.path().join("recommend.db")).unwrap();
+        conn.execute(
+            "INSERT INTO feeds (id, url, title) VALUES (1, 'https://example.com/feed', 'Example')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO articles
+             (id, feed_id, guid, title, summary, published_at, read, starred)
+             VALUES
+             (1, 1, 'unread', 'Unread candidate', 'candidate summary', 300, 0, 0),
+             (2, 1, 'starred', 'Starred interest', NULL, 200, 1, 1),
+             (3, 1, 'read', 'Recent interest', NULL, 100, 1, 0)",
+            [],
+        )
+        .unwrap();
+
+        let context = recommendation_context(&conn).unwrap();
+        assert_eq!(context.candidates.len(), 1);
+        assert_eq!(context.candidates[0].id, 1);
+        assert_eq!(context.starred[0].id, 2);
+        assert_eq!(context.recently_read[0].id, 2);
+        assert_eq!(context.feed_affinity[0].feed, "Example");
+        assert_eq!(context.feed_affinity[0].read_count, 2);
+        assert_eq!(context.feed_affinity[0].starred_count, 1);
+    }
 }

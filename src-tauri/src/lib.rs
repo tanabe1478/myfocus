@@ -583,7 +583,8 @@ pub fn run() {
         .plugin(tauri_plugin_wdio::init())
         .plugin(tauri_plugin_wdio_webdriver::init());
 
-    builder.setup(|app| {
+    builder
+        .setup(|app| {
             let data_dir = match std::env::var_os("MYFOCUS_DATA_DIR") {
                 Some(path) => std::path::PathBuf::from(path),
                 None => app.path().app_data_dir()?,

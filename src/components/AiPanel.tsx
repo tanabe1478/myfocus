@@ -96,7 +96,7 @@ export function AiPanel({
               購読記事を横断して探したり、未読の整理や読んでいる記事について相談できます。必要ならWebから新しい記事やフィードも探します。
             </p>
             <div className="ai-suggestions">
-              <button onClick={() => onSend("未読記事から、今日読むべきものを5件選んで理由と一緒に教えて")}>
+              <button onClick={() => onSend("スターや最近読んだ記事の傾向も参考に、未読記事から今日読むべきものを5件選んで理由と一緒に教えて")}>
                 今日読む記事を選んで
               </button>
               <button onClick={() => onSend("保存してある記事から、最近のAI関連の記事を探して要点を教えて")}>
