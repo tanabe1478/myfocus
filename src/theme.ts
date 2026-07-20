@@ -99,36 +99,39 @@ const CSS_TOKEN_NAMES: Record<keyof ThemeTokens, string> = {
   shadow: "--shadow",
 };
 
-function parseCustomThemes(raw: string | null): ThemeDefinition[] {
+function validCustomTheme(value: unknown): value is ThemeDefinition {
+  if (!value || typeof value !== "object") return false;
+  const theme = value as Partial<ThemeDefinition>;
+  return (
+    typeof theme.id === "string" &&
+    theme.id.length > 0 &&
+    theme.id.length <= 80 &&
+    !BUILTIN_THEMES.some((builtin) => builtin.id === theme.id) &&
+    typeof theme.name === "string" &&
+    theme.name.length > 0 &&
+    (theme.appearance === "light" || theme.appearance === "dark") &&
+    !!theme.tokens &&
+    typeof theme.tokens === "object" &&
+    Object.values(theme.tokens).every(
+      (token) => typeof token === "string" && token.length <= 200 && !/url\s*\(/i.test(token)
+    )
+  );
+}
+
+export function parseCustomThemes(raw: string | null): ThemeDefinition[] {
   if (!raw) return [];
   try {
-    const values = JSON.parse(raw) as unknown;
-    if (!Array.isArray(values)) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    const values = Array.isArray(parsed) ? parsed : [parsed];
     return values.filter((value): value is ThemeDefinition => {
-      if (!value || typeof value !== "object") return false;
-      const theme = value as Partial<ThemeDefinition>;
-      return (
-        typeof theme.id === "string" &&
-        theme.id.length > 0 &&
-        theme.id.length <= 80 &&
-        !BUILTIN_THEMES.some((builtin) => builtin.id === theme.id) &&
-        typeof theme.name === "string" &&
-        theme.name.length > 0 &&
-        (theme.appearance === "light" || theme.appearance === "dark") &&
-        !!theme.tokens &&
-        typeof theme.tokens === "object" &&
-        Object.values(theme.tokens).every(
-          (token) =>
-            typeof token === "string" && token.length <= 200 && !/url\s*\(/i.test(token)
-        )
-      );
+      return validCustomTheme(value);
     });
   } catch {
     return [];
   }
 }
 
-function resolveTokens(theme: ThemeDefinition): ThemeTokens {
+export function resolveThemeTokens(theme: ThemeDefinition): ThemeTokens {
   const baseId = theme.base ?? (theme.appearance === "dark" ? "warm-dark" : "warm-light");
   const base = baseId === "warm-dark" ? DARK_TOKENS : LIGHT_TOKENS;
   return { ...base, ...theme.tokens };
@@ -136,7 +139,7 @@ function resolveTokens(theme: ThemeDefinition): ThemeTokens {
 
 export function applyTheme(theme: ThemeDefinition): void {
   const root = document.documentElement;
-  const tokens = resolveTokens(theme);
+  const tokens = resolveThemeTokens(theme);
   for (const [key, cssName] of Object.entries(CSS_TOKEN_NAMES) as [
     keyof ThemeTokens,
     string,
@@ -187,6 +190,13 @@ export async function saveTheme(themeId: string): Promise<void> {
   const catalog = await loadThemeCatalog();
   const theme = applyById(themeId, catalog);
   await setSetting(THEME_SETTING_KEY, theme.id);
+}
+
+export async function saveCustomThemes(themes: ThemeDefinition[]): Promise<void> {
+  const valid = themes.filter(validCustomTheme).map(({ builtin: _, ...theme }) => theme);
+  const raw = JSON.stringify(valid);
+  localStorage.setItem(CUSTOM_THEMES_CACHE_KEY, raw);
+  await setSetting(CUSTOM_THEMES_SETTING_KEY, raw);
 }
 
 /** Apply cached colors synchronously, then follow DB changes from any window. */

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { closeSettings, getSetting, listPiModels, setSetting } from "../api";
 import {
   BUILTIN_THEMES,
+  applyTheme,
   loadAndApplyTheme,
   saveTheme,
   type ThemeDefinition,
@@ -13,6 +14,7 @@ import {
   SHORTCUT_LABELS,
   type KeyboardShortcuts,
 } from "../shortcuts";
+import { ThemeEditor } from "./ThemeEditor";
 import "../App.css";
 
 const DEFAULT_TRANSLATE_MODEL = "openai-codex/gpt-5.6-luna";
@@ -85,6 +87,8 @@ export function SettingsWindow() {
             onChange={(e) => {
               themeTouched.current = true;
               setThemeId(e.target.value);
+              const theme = themes.find((candidate) => candidate.id === e.target.value);
+              if (theme) applyTheme(theme);
             }}
           >
             {themes.map((theme) => (
@@ -94,8 +98,18 @@ export function SettingsWindow() {
             ))}
           </select>
           <div className="settings-hint">
-            組み込みテーマを選択します。将来追加するカスタムテーマも同じ一覧に表示されます。
+            選択するとこの画面でプレビューされ、「保存」で全ウィンドウへ反映されます。
           </div>
+          <ThemeEditor
+            themes={themes}
+            selectedId={themeId}
+            onThemesChange={setThemes}
+            onSelectedChange={(id) => {
+              themeTouched.current = true;
+              setThemeId(id);
+            }}
+            onNote={setNote}
+          />
         </section>
 
         <section className="settings-section">

@@ -63,6 +63,26 @@ describe("settings window", () => {
     );
     await browser.switchToWindow(settingsHandle!);
 
+    await $('button=複製して編集').click();
+    const themeName = await $('[data-testid="theme-name"]');
+    await themeName.waitForDisplayed();
+    await themeName.setValue("E2E custom theme");
+    await $('[data-testid="save-custom-theme"]').click();
+    await expect($('[data-testid="settings-note"]')).toHaveText(
+      "カスタムテーマを保存しました"
+    );
+    expect(await theme.getValue()).toMatch(/^user:/);
+    await expect(
+      browser.tauri.execute(({ core }) =>
+        core.invoke<string>("get_setting", { key: "custom_themes" })
+      )
+    ).resolves.toContain("E2E custom theme");
+    await browser.switchToWindow(mainHandle);
+    await expect(browser.execute(() => document.documentElement.dataset.theme)).resolves.toMatch(
+      /^user:/
+    );
+    await browser.switchToWindow(settingsHandle!);
+
     // Exercise the same native close request emitted by the title-bar ×.
     await browser.tauri.execute(({ core }) =>
       core.invoke("request_settings_native_close")
