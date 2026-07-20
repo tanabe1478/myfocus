@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { Article, Feed, SavedSearch, Selection } from "./types";
 import * as api from "./api";
-import { htmlToText } from "./format";
 import { usePi } from "./usePi";
 import {
   DEFAULT_SHORTCUTS,
@@ -318,12 +317,23 @@ export default function App() {
   const askAiAboutArticle = useCallback(
     (article: Article) => {
       setAiOpen(true);
-      const body = article.content_html
-        ? htmlToText(article.content_html)
-        : article.summary ?? "";
       pi.send(
-        `次の記事について相談させてください。まず要点を3行で要約してください。\n\n` +
-          `タイトル: ${article.title}\nURL: ${article.url ?? "不明"}\n\n本文:\n${body}`
+        `ローカル記事ID ${article.id} について相談します。` +
+          `まず article コマンドで本文または保存済みAI要約を確認し、要点を3行でまとめてください。` +
+          `その後の質問ではこの記事を会話の対象として扱ってください。`
+      );
+    },
+    [pi.send]
+  );
+
+  const findRelatedArticles = useCallback(
+    (article: Article) => {
+      setAiOpen(true);
+      pi.send(
+        `ローカル記事ID ${article.id} の関連記事を保存記事から5件探してください。` +
+          `最初に article コマンドで内容を確認し、中心的な固有名詞・技術・テーマを抽出してから、` +
+          `異なる検索語でsearchを複数回実行してください。元記事自身は除外し、` +
+          `各記事について関連する理由を簡潔に説明してください。`
       );
     },
     [pi.send]
@@ -429,6 +439,7 @@ export default function App() {
             onToggleRead={toggleRead}
             onSummarize={summarizeArticle}
             onAskAi={askAiAboutArticle}
+            onFindRelated={findRelatedArticles}
           />
         </>
       )}

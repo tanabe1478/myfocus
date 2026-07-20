@@ -11,6 +11,7 @@ interface Props {
   onToggleRead: (article: Article) => void;
   onSummarize: (article: Article, force: boolean) => Promise<Article>;
   onAskAi: (article: Article) => void;
+  onFindRelated: (article: Article) => void;
 }
 
 export function ReadingPane({
@@ -19,6 +20,7 @@ export function ReadingPane({
   onToggleRead,
   onSummarize,
   onAskAi,
+  onFindRelated,
 }: Props) {
   const [summarizing, setSummarizing] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
@@ -113,6 +115,14 @@ export function ReadingPane({
         </button>
         <button className="icon-button" title="AIに相談" onClick={() => onAskAi(article)}>
           ✦
+        </button>
+        <button
+          className="icon-button"
+          title="関連記事を探す"
+          data-testid="find-related"
+          onClick={() => onFindRelated(article)}
+        >
+          ≋
         </button>
         {article.url && (
           <>
