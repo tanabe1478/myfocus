@@ -35,9 +35,42 @@ body,
 }
 
 .app {
+  --sidebar-width: 220px;
+  --article-list-width: 320px;
   display: flex;
   height: 100vh;
   background: var(--bg-reading);
+}
+
+.column-resizer {
+  position: relative;
+  width: 6px;
+  flex: 0 0 6px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+  background: var(--bg-reading);
+}
+
+.column-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 2px;
+  background: var(--border);
+  transition: background 100ms ease, inset 100ms ease;
+}
+
+.column-resizer:hover::after,
+.column-resizer:focus-visible::after,
+body.column-resizing .column-resizer:hover::after {
+  inset: 0 1px;
+  background: var(--accent);
+}
+
+body.column-resizing,
+body.column-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 button {
@@ -98,7 +131,7 @@ textarea {
 /* ---------- sidebar ---------- */
 
 .sidebar {
-  width: 220px;
+  width: var(--sidebar-width);
   flex-shrink: 0;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
@@ -281,7 +314,7 @@ textarea {
 /* ---------- article list ---------- */
 
 .article-list {
-  width: 320px;
+  width: var(--article-list-width);
   flex-shrink: 0;
   background: var(--bg-list);
   border-right: 1px solid var(--border);

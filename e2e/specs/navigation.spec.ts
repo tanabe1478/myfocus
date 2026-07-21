@@ -11,6 +11,34 @@ describe("main window keyboard and search flows", () => {
     await $('[data-testid="article-1001"]').waitForDisplayed();
   });
 
+  it("resizes columns with the accessible separators and persists widths", async () => {
+    const sidebar = await $(".sidebar");
+    const sidebarResizer = await $('[data-testid="sidebar-resizer"]');
+    const sidebarBefore = (await sidebar.getSize()).width;
+    await sidebarResizer.click();
+    await press("ArrowRight");
+    await browser.waitUntil(async () => (await sidebar.getSize()).width >= sidebarBefore + 9);
+
+    const articleList = await $(".article-list");
+    const articleResizer = await $('[data-testid="article-list-resizer"]');
+    const articleBefore = (await articleList.getSize()).width;
+    await articleResizer.click();
+    await press("ArrowRight");
+    await browser.waitUntil(async () => (await articleList.getSize()).width >= articleBefore + 9);
+
+    const saved = await browser.execute(() => ({
+      sidebar: Number(localStorage.getItem("myfocus.sidebarWidth")),
+      articles: Number(localStorage.getItem("myfocus.articleListWidth")),
+    }));
+    expect(saved.sidebar).toBeGreaterThanOrEqual(sidebarBefore + 9);
+    expect(saved.articles).toBeGreaterThanOrEqual(articleBefore + 9);
+
+    await browser.refresh();
+    await $('[data-testid="article-1001"]').waitForDisplayed();
+    expect((await $(".sidebar").getSize()).width).toBe(saved.sidebar);
+    expect((await $(".article-list").getSize()).width).toBe(saved.articles);
+  });
+
   it("navigates articles with j and k", async () => {
     await press("j");
     await expect($('[data-testid="article-1001"]')).toHaveElementClass(

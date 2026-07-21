@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { Article, Feed, SavedSearch, Selection, SummaryStats } from "./types";
 import * as api from "./api";
@@ -15,7 +22,25 @@ import { ReadingPane } from "./components/ReadingPane";
 import { SearchOverlay } from "./components/SearchOverlay";
 import { AiPanel } from "./components/AiPanel";
 import { HackerNewsPane } from "./components/HackerNewsPane";
+import { ColumnResizer } from "./components/ColumnResizer";
 import "./App.css";
+
+const SIDEBAR_WIDTH_KEY = "myfocus.sidebarWidth";
+const ARTICLE_LIST_WIDTH_KEY = "myfocus.articleListWidth";
+const DEFAULT_SIDEBAR_WIDTH = 220;
+const DEFAULT_ARTICLE_LIST_WIDTH = 320;
+const MIN_SIDEBAR_WIDTH = 180;
+const MAX_SIDEBAR_WIDTH = 360;
+const MIN_ARTICLE_LIST_WIDTH = 260;
+const MAX_ARTICLE_LIST_WIDTH = 520;
+const MIN_CONTENT_WIDTH = 300;
+const AI_PANEL_WIDTH = 340;
+const RESIZER_SPACE = 12;
+
+function savedWidth(key: string, fallback: number, min: number, max: number): number {
+  const value = Number(localStorage.getItem(key));
+  return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+}
 
 export default function App() {
   const [feeds, setFeeds] = useState<Feed[]>([]);
@@ -34,6 +59,17 @@ export default function App() {
     failed: 0,
   });
   const [summaryNotice, setSummaryNotice] = useState<string | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    savedWidth(SIDEBAR_WIDTH_KEY, DEFAULT_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
+  );
+  const [articleListWidth, setArticleListWidth] = useState(() =>
+    savedWidth(
+      ARTICLE_LIST_WIDTH_KEY,
+      DEFAULT_ARTICLE_LIST_WIDTH,
+      MIN_ARTICLE_LIST_WIDTH,
+      MAX_ARTICLE_LIST_WIDTH
+    )
+  );
 
   // feeds-updated ハンドラから最新の選択記事を参照するための ref
   const selectedRef = useRef<Article | null>(null);
@@ -52,6 +88,13 @@ export default function App() {
   }, [selection]);
 
   const pi = usePi();
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+  }, [sidebarWidth]);
+  useEffect(() => {
+    localStorage.setItem(ARTICLE_LIST_WIDTH_KEY, String(articleListWidth));
+  }, [articleListWidth]);
 
   // Match the source order rendered by Sidebar: uncategorized feeds first,
   // then each category row followed by the feeds it contains.
@@ -479,8 +522,14 @@ export default function App() {
     }
   }, [selection, feeds]);
 
+  const layoutStyle = {
+    "--sidebar-width": `${sidebarWidth}px`,
+    "--article-list-width": `${articleListWidth}px`,
+  } as CSSProperties;
+  const reservedAiWidth = aiOpen ? AI_PANEL_WIDTH : 0;
+
   return (
-    <div className="app">
+    <div className="app" style={layoutStyle}>
       <Sidebar
         feeds={feeds}
         selection={selection}
@@ -503,6 +552,24 @@ export default function App() {
         }}
         onImportOpml={api.importOpml}
       />
+      <ColumnResizer
+        value={sidebarWidth}
+        defaultValue={DEFAULT_SIDEBAR_WIDTH}
+        min={MIN_SIDEBAR_WIDTH}
+        getMax={() =>
+          Math.min(
+            MAX_SIDEBAR_WIDTH,
+            window.innerWidth -
+              (selection.kind === "hn" ? 0 : articleListWidth) -
+              reservedAiWidth -
+              MIN_CONTENT_WIDTH -
+              RESIZER_SPACE
+          )
+        }
+        onChange={setSidebarWidth}
+        label="サイドバーの幅を変更"
+        testId="sidebar-resizer"
+      />
       {selection.kind === "hn" ? (
         <HackerNewsPane />
       ) : (
@@ -519,6 +586,24 @@ export default function App() {
                 ? undefined
                 : handleMarkAllRead
             }
+          />
+          <ColumnResizer
+            value={articleListWidth}
+            defaultValue={DEFAULT_ARTICLE_LIST_WIDTH}
+            min={MIN_ARTICLE_LIST_WIDTH}
+            getMax={() =>
+              Math.min(
+                MAX_ARTICLE_LIST_WIDTH,
+                window.innerWidth -
+                  sidebarWidth -
+                  reservedAiWidth -
+                  MIN_CONTENT_WIDTH -
+                  RESIZER_SPACE
+              )
+            }
+            onChange={setArticleListWidth}
+            label="記事一覧の幅を変更"
+            testId="article-list-resizer"
           />
           <ReadingPane
             article={selected}
