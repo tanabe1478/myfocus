@@ -1,14 +1,8 @@
 describe("daily briefing", () => {
   it("opens a cached recommendation directly from the sidebar", async () => {
-    await browser.tauri.execute(({ core }) =>
-      core.invoke("set_setting", {
-        key: "ai_recommendation_cache",
-        value: JSON.stringify({
-          createdAt: Date.now(),
-          text: "**Daily picks**\n\nARTICLE: 999 | Cached recommendation\nA reason to read it.",
-        }),
-      })
-    );
+    // Seed in Rust so the WebKit embedded driver does not need to serialize
+    // a nested multiline payload through direct JavaScript evaluation.
+    await browser.tauri.execute(({ core }) => core.invoke("seed_e2e_data"));
 
     const briefing = await $('[data-testid="open-briefing"]');
     await briefing.waitForDisplayed();

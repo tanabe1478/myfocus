@@ -151,6 +151,13 @@ fn seed_e2e_data(app: AppHandle, state: State<AppState>) -> Result<(), String> {
            (1003, 102, 'beta-1', 'Beta technology story', 'Tauri and WebDriver integration', 100, 0, 0);",
     )
     .map_err(|e| e.to_string())?;
+    let briefing = serde_json::json!({
+        "createdAt": 1_900_000_000_000_i64,
+        "model": "e2e-model",
+        "text": "**Daily picks**\n\nARTICLE: 1001 | Cached recommendation\nA reason to read it."
+    });
+    db::set_setting(&conn, "ai_recommendation_cache", &briefing.to_string())
+        .map_err(|e| e.to_string())?;
     let _ = app.emit("feeds-updated", ());
     Ok(())
 }
