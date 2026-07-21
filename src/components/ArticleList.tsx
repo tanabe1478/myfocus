@@ -21,11 +21,15 @@ export function ArticleList({
   showSummaryStatus = false,
 }: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
+  const previewText = (article: Article) =>
+    showSummaryStatus ? article.ai_summary || article.summary : article.summary;
 
   const virtualizer = useVirtualizer({
     count: articles.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 84,
+    // Rows use matching fixed heights. This avoids stale dynamic measurements
+    // when column resizing causes Japanese titles and summaries to reflow.
+    estimateSize: (index) => (previewText(articles[index]) ? 98 : 76),
     overscan: 12,
   });
 
@@ -54,6 +58,7 @@ export function ArticleList({
         >
           {virtualizer.getVirtualItems().map((vi) => {
             const a = articles[vi.index];
+            const preview = previewText(a);
             return (
               <div
                 key={a.id}
@@ -61,7 +66,7 @@ export function ArticleList({
                 data-article-id={a.id}
                 data-testid={`article-${a.id}`}
                 ref={virtualizer.measureElement}
-                className={`article-row ${a.id === selectedId ? "selected" : ""} ${a.read ? "read" : ""}`}
+                className={`article-row ${preview ? "has-preview" : ""} ${a.id === selectedId ? "selected" : ""} ${a.read ? "read" : ""}`}
                 style={{
                   position: "absolute",
                   top: 0,
@@ -93,11 +98,7 @@ export function ArticleList({
                   {a.starred && <span className="star">★ </span>}
                   {a.title || "(無題)"}
                 </div>
-                {(showSummaryStatus ? a.ai_summary || a.summary : a.summary) && (
-                  <div className="article-row-summary">
-                    {showSummaryStatus ? a.ai_summary || a.summary : a.summary}
-                  </div>
-                )}
+                {preview && <div className="article-row-summary">{preview}</div>}
               </div>
             );
           })}

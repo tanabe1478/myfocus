@@ -37,6 +37,15 @@ describe("main window keyboard and search flows", () => {
     await $('[data-testid="article-1001"]').waitForDisplayed();
     expect((await $(".sidebar").getSize()).width).toBe(saved.sidebar);
     expect((await $(".article-list").getSize()).width).toBe(saved.articles);
+
+    const rows = await browser.execute(() => {
+      const first = document.querySelector<HTMLElement>('[data-testid="article-1001"]')!;
+      const second = document.querySelector<HTMLElement>('[data-testid="article-1002"]')!;
+      const a = first.getBoundingClientRect();
+      const b = second.getBoundingClientRect();
+      return { firstBottom: a.bottom, secondTop: b.top };
+    });
+    expect(rows.firstBottom).toBeLessThanOrEqual(rows.secondTop + 1);
   });
 
   it("navigates articles with j and k", async () => {

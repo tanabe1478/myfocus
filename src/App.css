@@ -328,9 +328,15 @@ textarea {
 }
 
 .article-row {
+  height: 76px;
   padding: 10px 14px;
+  overflow: hidden;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
+}
+
+.article-row.has-preview {
+  height: 98px;
 }
 
 .article-row:hover {
@@ -416,7 +422,7 @@ textarea {
   line-height: 1.5;
   color: var(--text-muted);
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
