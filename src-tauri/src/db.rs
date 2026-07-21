@@ -28,6 +28,9 @@ pub struct Article {
     pub full_text: Option<String>,
     pub ai_summary: Option<String>,
     pub ai_summary_model: Option<String>,
+    pub ai_summary_status: Option<String>,
+    pub ai_summary_error: Option<String>,
+    pub ai_summary_reviewed: bool,
     pub published_at: Option<i64>,
     pub read: bool,
     pub starred: bool,
@@ -85,6 +88,19 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             value INTEGER NOT NULL CHECK(value IN (-1, 1)),
             updated_at INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS article_summary_jobs (
+            article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+            status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+            force INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            requested_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            reviewed_at INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_summary_jobs_status
+            ON article_summary_jobs(status, updated_at DESC);
 
         CREATE INDEX IF NOT EXISTS idx_articles_feed ON articles(feed_id, published_at DESC);
         CREATE INDEX IF NOT EXISTS idx_articles_read ON articles(read, published_at DESC);
@@ -185,6 +201,24 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         "#,
     )?;
 
+    // Existing summaries remain available in history without appearing as new.
+    conn.execute(
+        "INSERT OR IGNORE INTO article_summary_jobs
+           (article_id, status, force, requested_at, updated_at, reviewed_at)
+         SELECT id, 'completed', 0,
+                COALESCE(ai_summary_updated_at, strftime('%s','now')),
+                COALESCE(ai_summary_updated_at, strftime('%s','now')),
+                COALESCE(ai_summary_updated_at, strftime('%s','now'))
+         FROM articles WHERE ai_summary IS NOT NULL",
+        [],
+    )?;
+    // Jobs interrupted by an application restart are picked up again.
+    conn.execute(
+        "UPDATE article_summary_jobs SET status = 'queued', updated_at = strftime('%s','now')
+         WHERE status = 'running'",
+        [],
+    )?;
+
     // Preserve the state of articles that were read before tombstones existed.
     conn.execute(
         "INSERT OR IGNORE INTO article_read_history (feed_id, guid, read_at)
@@ -250,22 +284,22 @@ pub fn set_ai_feedback(conn: &Connection, article_id: i64, value: i8) -> rusqlit
     Ok(())
 }
 
-/// Delete read, unstarred articles older than the given number of days.
-/// Articles without a publish date are kept. Returns the number deleted.
+/// Delete read, unstarred, non-summarized articles older than the configured age.
+/// Articles without a publish date and AI summary history entries are kept.
 pub fn cleanup_old_articles(conn: &Connection, days: i64) -> rusqlite::Result<usize> {
     // Keep only feed_id + guid before dropping the heavy article body. A later
     // feed refresh can then ignore the item instead of resurrecting it unread.
     conn.execute(
         "INSERT OR IGNORE INTO article_read_history (feed_id, guid, read_at)
          SELECT feed_id, guid, strftime('%s','now') FROM articles
-         WHERE read = 1 AND starred = 0
+         WHERE read = 1 AND starred = 0 AND ai_summary IS NULL
            AND published_at IS NOT NULL
            AND published_at < strftime('%s', 'now') - ?1 * 86400",
         [days],
     )?;
     conn.execute(
         "DELETE FROM articles
-         WHERE read = 1 AND starred = 0
+         WHERE read = 1 AND starred = 0 AND ai_summary IS NULL
            AND published_at IS NOT NULL
            AND published_at < strftime('%s', 'now') - ?1 * 86400",
         [days],
@@ -298,17 +332,20 @@ fn row_to_article(row: &rusqlite::Row) -> rusqlite::Result<Article> {
         full_text: row.get(9)?,
         ai_summary: row.get(10)?,
         ai_summary_model: row.get(11)?,
-        published_at: row.get(12)?,
-        read: row.get::<_, i64>(13)? != 0,
-        starred: row.get::<_, i64>(14)? != 0,
+        ai_summary_status: row.get(12)?,
+        ai_summary_error: row.get(13)?,
+        ai_summary_reviewed: row.get::<_, i64>(14)? != 0,
+        published_at: row.get(15)?,
+        read: row.get::<_, i64>(16)? != 0,
+        starred: row.get::<_, i64>(17)? != 0,
     })
 }
 
-const ARTICLE_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, a.content_html, a.full_text, a.ai_summary, a.ai_summary_model, a.published_at, a.read, a.starred";
+const ARTICLE_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, a.content_html, a.full_text, a.ai_summary, a.ai_summary_model, (SELECT status FROM article_summary_jobs j WHERE j.article_id = a.id), (SELECT error FROM article_summary_jobs j WHERE j.article_id = a.id), COALESCE((SELECT reviewed_at IS NOT NULL FROM article_summary_jobs j WHERE j.article_id = a.id), 0), a.published_at, a.read, a.starred";
 
 // list views skip content_html (it can be tens of KB per article); the reading
 // pane loads the full row via get_article
-const ARTICLE_LIST_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, NULL, NULL, NULL, NULL, a.published_at, a.read, a.starred";
+const ARTICLE_LIST_COLS: &str = "a.id, a.feed_id, f.title, a.guid, a.title, a.url, a.author, a.summary, NULL, NULL, a.ai_summary, a.ai_summary_model, (SELECT status FROM article_summary_jobs j WHERE j.article_id = a.id), (SELECT error FROM article_summary_jobs j WHERE j.article_id = a.id), COALESCE((SELECT reviewed_at IS NOT NULL FROM article_summary_jobs j WHERE j.article_id = a.id), 0), a.published_at, a.read, a.starred";
 
 pub fn list_feeds(conn: &Connection) -> rusqlite::Result<Vec<Feed>> {
     let mut stmt = conn.prepare(
@@ -397,6 +434,7 @@ pub fn list_articles(
     category: Option<&str>,
     unread_only: bool,
     starred_only: bool,
+    summarized_only: bool,
 ) -> rusqlite::Result<Vec<Article>> {
     let mut sql = format!(
         "SELECT {ARTICLE_LIST_COLS} FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE 1=1"
@@ -416,7 +454,12 @@ pub fn list_articles(
     if starred_only {
         sql.push_str(" AND a.starred = 1");
     }
-    sql.push_str(" ORDER BY a.published_at DESC, a.id DESC");
+    if summarized_only {
+        sql.push_str(" AND (a.ai_summary IS NOT NULL OR EXISTS (SELECT 1 FROM article_summary_jobs j WHERE j.article_id = a.id))");
+        sql.push_str(" ORDER BY COALESCE((SELECT updated_at FROM article_summary_jobs j WHERE j.article_id = a.id), a.ai_summary_updated_at) DESC, a.id DESC");
+    } else {
+        sql.push_str(" ORDER BY a.published_at DESC, a.id DESC");
+    }
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
@@ -459,6 +502,110 @@ pub fn store_ai_summary(
         params![summary, model, article_id],
     )?;
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryStats {
+    pub pending: i64,
+    pub unreviewed: i64,
+    pub failed: i64,
+}
+
+pub fn queue_summary_job(
+    conn: &Connection,
+    article_id: i64,
+    force: bool,
+) -> rusqlite::Result<bool> {
+    let active = conn
+        .prepare(
+            "SELECT 1 FROM article_summary_jobs
+             WHERE article_id = ?1 AND status IN ('queued', 'running')",
+        )?
+        .exists([article_id])?;
+    if active {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO article_summary_jobs
+           (article_id, status, force, error, requested_at, updated_at, reviewed_at)
+         VALUES (?1, 'queued', ?2, NULL, strftime('%s','now'), strftime('%s','now'), NULL)
+         ON CONFLICT(article_id) DO UPDATE SET
+           status = 'queued', force = excluded.force, error = NULL,
+           requested_at = excluded.requested_at, updated_at = excluded.updated_at,
+           reviewed_at = NULL",
+        params![article_id, force as i64],
+    )?;
+    Ok(true)
+}
+
+pub fn queued_summary_jobs(conn: &Connection) -> rusqlite::Result<Vec<(i64, bool)>> {
+    let mut stmt = conn.prepare(
+        "SELECT article_id, force FROM article_summary_jobs
+         WHERE status = 'queued' ORDER BY requested_at",
+    )?;
+    let jobs = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)))?
+        .collect();
+    jobs
+}
+
+pub fn start_summary_job(conn: &Connection, article_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE article_summary_jobs
+         SET status = 'running', updated_at = strftime('%s','now'), error = NULL
+         WHERE article_id = ?1",
+        [article_id],
+    )?;
+    Ok(())
+}
+
+pub fn complete_summary_job(conn: &Connection, article_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE article_summary_jobs
+         SET status = 'completed', updated_at = strftime('%s','now'), error = NULL,
+             reviewed_at = NULL
+         WHERE article_id = ?1",
+        [article_id],
+    )?;
+    Ok(())
+}
+
+pub fn fail_summary_job(conn: &Connection, article_id: i64, error: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE article_summary_jobs
+         SET status = 'failed', updated_at = strftime('%s','now'), error = ?2
+         WHERE article_id = ?1",
+        params![article_id, error.chars().take(1000).collect::<String>()],
+    )?;
+    Ok(())
+}
+
+pub fn mark_summary_reviewed(conn: &Connection, article_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE article_summary_jobs SET reviewed_at = strftime('%s','now')
+         WHERE article_id = ?1 AND status = 'completed'",
+        [article_id],
+    )?;
+    Ok(())
+}
+
+pub fn summary_stats(conn: &Connection) -> rusqlite::Result<SummaryStats> {
+    conn.query_row(
+        "SELECT
+           SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END),
+           SUM(CASE WHEN status = 'completed' AND reviewed_at IS NULL THEN 1 ELSE 0 END),
+           SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)
+         FROM article_summary_jobs",
+        [],
+        |row| {
+            Ok(SummaryStats {
+                pending: row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                unreviewed: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                failed: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            })
+        },
+    )
 }
 
 /// Full-text search over title, summary, feed title, and extracted page body.

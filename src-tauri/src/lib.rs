@@ -20,6 +20,7 @@ pub(crate) struct AppState {
     pub(crate) db: Mutex<Connection>,
     pub(crate) client: reqwest::Client,
     pub(crate) diagnostics: DiagnosticLogger,
+    summary_worker: std::sync::Arc<tokio::sync::Mutex<()>>,
     pi: PiBridge,
 }
 
@@ -49,6 +50,7 @@ fn list_articles(
     category: Option<String>,
     unread_only: bool,
     starred_only: bool,
+    summarized_only: bool,
 ) -> Result<Vec<Article>, String> {
     let conn = lock_db(&state)?;
     db::list_articles(
@@ -57,6 +59,7 @@ fn list_articles(
         category.as_deref(),
         unread_only,
         starred_only,
+        summarized_only,
     )
     .map_err(|e| e.to_string())
 }
@@ -69,8 +72,7 @@ fn get_article(state: State<AppState>, article_id: i64) -> Result<Article, Strin
 
 const DEFAULT_SUMMARY_MODEL: &str = "openai-codex/gpt-5.6-luna";
 
-#[tauri::command]
-async fn summarize_article(
+async fn summarize_article_inner(
     app: AppHandle,
     article_id: i64,
     force: bool,
@@ -121,6 +123,97 @@ async fn summarize_article(
 }
 
 #[tauri::command]
+async fn summarize_article(
+    app: AppHandle,
+    article_id: i64,
+    force: bool,
+) -> Result<Article, String> {
+    summarize_article_inner(app, article_id, force).await
+}
+
+fn spawn_summary_job(app: AppHandle, article_id: i64, force: bool) {
+    tauri::async_runtime::spawn(async move {
+        let worker = app.state::<AppState>().summary_worker.clone();
+        let _worker = worker.lock().await;
+        {
+            let state = app.state::<AppState>();
+            if let Ok(conn) = lock_db(&state) {
+                let _ = db::start_summary_job(&conn, article_id);
+            };
+        }
+        let _ = app.emit("summary-jobs-updated", article_id);
+        let result = summarize_article_inner(app.clone(), article_id, force).await;
+        let state = app.state::<AppState>();
+        if let Ok(conn) = lock_db(&state) {
+            match &result {
+                Ok(_) => {
+                    let _ = db::complete_summary_job(&conn, article_id);
+                    state.diagnostics.log(
+                        "info",
+                        "article_summary_completed",
+                        Some(serde_json::json!({ "articleId": article_id })),
+                    );
+                }
+                Err(error) => {
+                    let _ = db::fail_summary_job(&conn, article_id, error);
+                    state.diagnostics.log(
+                        "error",
+                        "article_summary_failed",
+                        Some(serde_json::json!({
+                            "articleId": article_id,
+                            "message": error,
+                        })),
+                    );
+                }
+            }
+        }
+        let _ = app.emit("summary-jobs-updated", article_id);
+    });
+}
+
+#[tauri::command]
+fn enqueue_article_summary(
+    app: AppHandle,
+    state: State<AppState>,
+    article_id: i64,
+    force: bool,
+) -> Result<Article, String> {
+    let should_spawn = {
+        let conn = lock_db(&state)?;
+        db::get_article(&conn, article_id).map_err(|e| e.to_string())?;
+        db::queue_summary_job(&conn, article_id, force).map_err(|e| e.to_string())?
+    };
+    if should_spawn {
+        state.diagnostics.log(
+            "info",
+            "article_summary_queued",
+            Some(serde_json::json!({ "articleId": article_id, "force": force })),
+        );
+        spawn_summary_job(app.clone(), article_id, force);
+    }
+    let conn = lock_db(&state)?;
+    db::get_article(&conn, article_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_summary_stats(state: State<AppState>) -> Result<db::SummaryStats, String> {
+    let conn = lock_db(&state)?;
+    db::summary_stats(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mark_summary_reviewed(
+    app: AppHandle,
+    state: State<AppState>,
+    article_id: i64,
+) -> Result<(), String> {
+    let conn = lock_db(&state)?;
+    db::mark_summary_reviewed(&conn, article_id).map_err(|e| e.to_string())?;
+    let _ = app.emit("summary-jobs-updated", article_id);
+    Ok(())
+}
+
+#[tauri::command]
 fn fuzzy_search(state: State<AppState>, query: String) -> Result<Vec<Article>, String> {
     let conn = lock_db(&state)?;
     db::search_articles(&conn, &query, 200).map_err(|e| e.to_string())
@@ -148,7 +241,14 @@ fn seed_e2e_data(app: AppHandle, state: State<AppState>) -> Result<(), String> {
            (id, feed_id, guid, title, summary, published_at, read, starred) VALUES
            (1001, 101, 'alpha-1', 'Alpha searchable story', 'Rust desktop testing guide', 300, 0, 0),
            (1002, 101, 'alpha-2', 'Second Alpha story', 'Keyboard navigation article', 200, 0, 0),
-           (1003, 102, 'beta-1', 'Beta technology story', 'Tauri and WebDriver integration', 100, 0, 0);",
+           (1003, 102, 'beta-1', 'Beta technology story', 'Tauri and WebDriver integration', 100, 0, 0);
+         UPDATE articles SET ai_summary = 'Completed E2E summary',
+           ai_summary_model = 'e2e-model', ai_summary_updated_at = 400 WHERE id = 1001;
+         INSERT INTO article_summary_jobs
+           (article_id, status, force, error, requested_at, updated_at, reviewed_at) VALUES
+           (1001, 'completed', 0, NULL, 400, 400, NULL),
+           (1002, 'running', 0, NULL, 300, 300, NULL),
+           (1003, 'failed', 0, 'E2E summary failure', 200, 200, NULL);",
     )
     .map_err(|e| e.to_string())?;
     let briefing = serde_json::json!({
@@ -159,6 +259,7 @@ fn seed_e2e_data(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     db::set_setting(&conn, "ai_recommendation_cache", &briefing.to_string())
         .map_err(|e| e.to_string())?;
     let _ = app.emit("feeds-updated", ());
+    let _ = app.emit("summary-jobs-updated", 0_i64);
     Ok(())
 }
 
@@ -740,13 +841,18 @@ pub fn run() {
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()?;
+            let pending_summary_jobs = db::queued_summary_jobs(&conn)?;
 
             app.manage(AppState {
                 db: Mutex::new(conn),
                 client,
                 diagnostics,
+                summary_worker: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 pi: PiBridge::new(db_path, std::env::current_exe()?),
             });
+            for (article_id, force) in pending_summary_jobs {
+                spawn_summary_job(app.handle().clone(), article_id, force);
+            }
 
             // Keep the statically configured settings webview alive. Both the
             // native title-bar close button and the in-page × only hide it.
@@ -780,6 +886,9 @@ pub fn run() {
             list_articles,
             get_article,
             summarize_article,
+            enqueue_article_summary,
+            get_summary_stats,
+            mark_summary_reviewed,
             fuzzy_search,
             get_setting,
             seed_e2e_data,
@@ -879,6 +988,26 @@ mod tests {
         let article = db::get_article(&conn, rust_id).unwrap();
         assert_eq!(article.ai_summary.as_deref(), Some("AIによる要約"));
         assert_eq!(article.ai_summary_model.as_deref(), Some("provider/model"));
+    }
+
+    #[test]
+    fn summary_jobs_persist_queue_and_review_state() {
+        let mut conn = test_db();
+        let feed = db::upsert_feed(&conn, "https://summary.example/feed", "Summary", None).unwrap();
+        seed_article(&mut conn, feed, "Queued summary", 0);
+        let article_id = db::search_articles(&conn, "Queued", 10).unwrap()[0].id;
+
+        assert!(db::queue_summary_job(&conn, article_id, false).unwrap());
+        assert!(!db::queue_summary_job(&conn, article_id, false).unwrap());
+        assert_eq!(db::summary_stats(&conn).unwrap().pending, 1);
+        db::start_summary_job(&conn, article_id).unwrap();
+        db::store_ai_summary(&conn, article_id, "summary", "test-model").unwrap();
+        db::complete_summary_job(&conn, article_id).unwrap();
+        let stats = db::summary_stats(&conn).unwrap();
+        assert_eq!(stats.pending, 0);
+        assert_eq!(stats.unreviewed, 1);
+        db::mark_summary_reviewed(&conn, article_id).unwrap();
+        assert_eq!(db::summary_stats(&conn).unwrap().unreviewed, 0);
     }
 
     #[test]

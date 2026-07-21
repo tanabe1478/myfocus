@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { Article, Feed, SavedSearch, Selection } from "./types";
+import type { Article, Feed, SavedSearch, Selection, SummaryStats } from "./types";
 import * as api from "./api";
 import { usePi } from "./usePi";
 import {
@@ -28,6 +28,12 @@ export default function App() {
   const [shortcuts, setShortcuts] = useState<KeyboardShortcuts>(DEFAULT_SHORTCUTS);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
   const [aiFeedback, setAiFeedbackState] = useState<Record<string, number>>({});
+  const [summaryStats, setSummaryStats] = useState<SummaryStats>({
+    pending: 0,
+    unreviewed: 0,
+    failed: 0,
+  });
+  const [summaryNotice, setSummaryNotice] = useState<string | null>(null);
 
   // feeds-updated ハンドラから最新の選択記事を参照するための ref
   const selectedRef = useRef<Article | null>(null);
@@ -96,6 +102,7 @@ export default function App() {
   useEffect(() => {
     reloadFeeds();
     api.listAiFeedback().then(setAiFeedbackState).catch(() => {});
+    api.getSummaryStats().then(setSummaryStats).catch(() => {});
   }, [reloadFeeds]);
 
   useEffect(() => {
@@ -112,7 +119,22 @@ export default function App() {
     };
   }, [reloadFeeds, reloadArticles]);
 
-
+  useEffect(() => {
+    const unlisten = listen<number>("summary-jobs-updated", (event) => {
+      api.getSummaryStats().then(setSummaryStats).catch(() => {});
+      if (selection.kind === "summaries") reloadArticles();
+      if (selectedRef.current?.id === event.payload) {
+        api.getArticle(event.payload)
+          .then((article) => {
+            setSelected((current) => (current?.id === article.id ? article : current));
+          })
+          .catch(() => {});
+      }
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, [reloadArticles, selection.kind]);
 
   const selectArticle = useCallback((article: Article) => {
     setSelected(article);
@@ -123,6 +145,22 @@ export default function App() {
         setSelected((cur) => (cur?.id === article.id ? { ...full, read: true } : cur))
       )
       .catch(() => {});
+    if (
+      selection.kind === "summaries" &&
+      article.ai_summary_status === "completed" &&
+      !article.ai_summary_reviewed
+    ) {
+      api.markSummaryReviewed(article.id).catch(() => {});
+      setArticles((list) =>
+        list.map((item) =>
+          item.id === article.id ? { ...item, ai_summary_reviewed: true } : item
+        )
+      );
+      setSummaryStats((current) => ({
+        ...current,
+        unreviewed: Math.max(0, current.unreviewed - 1),
+      }));
+    }
     if (!article.read) {
       api.markRead(article.id, true);
       setArticles((list) =>
@@ -136,7 +174,7 @@ export default function App() {
         )
       );
     }
-  }, []);
+  }, [selection.kind]);
 
   const handleAddFeed = useCallback(
     async (url: string) => {
@@ -200,7 +238,11 @@ export default function App() {
   }, []);
 
   const handleMarkAllRead = useCallback(async () => {
-    if (selection.kind === "hn" || selection.kind === "search") return;
+    if (
+      selection.kind === "hn" ||
+      selection.kind === "search" ||
+      selection.kind === "summaries"
+    ) return;
     await api.markAllRead(
       selection.kind === "feed" ? selection.feedId : null,
       selection.kind === "category" ? selection.category : null
@@ -249,7 +291,8 @@ export default function App() {
       if (
         matchesShortcut(e, shortcuts.markAllRead) &&
         selection.kind !== "hn" &&
-        selection.kind !== "search"
+        selection.kind !== "search" &&
+        selection.kind !== "summaries"
       ) {
         e.preventDefault();
         if (confirm("現在の表示範囲の記事をすべて既読にしますか？")) {
@@ -309,8 +352,12 @@ export default function App() {
   }, []);
 
   const summarizeArticle = useCallback(async (article: Article, force: boolean) => {
-    const updated = await api.summarizeArticle(article.id, force);
+    const updated = await api.enqueueArticleSummary(article.id, force);
     setSelected((current) => (current?.id === updated.id ? updated : current));
+    setArticles((list) => list.map((item) => (item.id === updated.id ? updated : item)));
+    setSummaryNotice(`「${article.title || "無題"}」を要約キューに追加しました`);
+    window.setTimeout(() => setSummaryNotice(null), 3500);
+    api.getSummaryStats().then(setSummaryStats).catch(() => {});
     return updated;
   }, []);
 
@@ -392,6 +439,8 @@ export default function App() {
         return "未読";
       case "starred":
         return "スター付き";
+      case "summaries":
+        return "AI要約";
       case "feed":
         return feeds.find((f) => f.id === selection.feedId)?.title ?? "フィード";
       case "category":
@@ -410,6 +459,7 @@ export default function App() {
         selection={selection}
         savedSearches={savedSearches}
         totalUnread={totalUnread}
+        summaryStats={summaryStats}
         refreshing={refreshing}
         onSelect={(next) => {
           setSelection(next);
@@ -435,7 +485,12 @@ export default function App() {
             selectedId={selected?.id ?? null}
             title={listTitle}
             onSelect={selectArticle}
-            onMarkAllRead={selection.kind === "search" ? undefined : handleMarkAllRead}
+            showSummaryStatus={selection.kind === "summaries"}
+            onMarkAllRead={
+              selection.kind === "search" || selection.kind === "summaries"
+                ? undefined
+                : handleMarkAllRead
+            }
           />
           <ReadingPane
             article={selected}
@@ -472,6 +527,11 @@ export default function App() {
         >
           ✦
         </button>
+      )}
+      {summaryNotice && (
+        <div className="summary-queue-notice" role="status" data-testid="summary-queue-notice">
+          {summaryNotice}
+        </div>
       )}
       {searchOpen && (
         <SearchOverlay

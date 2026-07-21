@@ -7,6 +7,7 @@ async function press(...keys: string[]) {
 describe("main window keyboard and search flows", () => {
   before(async () => {
     await browser.tauri.execute(({ core }) => core.invoke("seed_e2e_data"));
+    await $('[data-testid="all-articles"]').click();
     await $('[data-testid="article-1001"]').waitForDisplayed();
   });
 
@@ -58,6 +59,7 @@ describe("main window keyboard and search flows", () => {
           category: null,
           unreadOnly: false,
           starredOnly: false,
+          summarizedOnly: false,
         })
       );
       return articles.length === 2 && articles.every((article) => article.read);

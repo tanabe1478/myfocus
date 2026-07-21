@@ -101,7 +101,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         "recent" => {
             let unread_only = args.iter().any(|arg| arg == "--unread");
-            let mut articles = db::list_articles(&conn, None, None, unread_only, false)
+            let mut articles = db::list_articles(&conn, None, None, unread_only, false, false)
                 .map_err(|e| e.to_string())?;
             articles.truncate(DEFAULT_LIMIT as usize);
             print_json(
@@ -190,7 +190,7 @@ fn recommendation_context(conn: &Connection) -> Result<RecommendationContext, St
         .map_err(|e| e.to_string())?
         .into_iter()
         .collect();
-    let candidates = db::list_articles(conn, None, None, true, false)
+    let candidates = db::list_articles(conn, None, None, true, false, false)
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|article| feedback.get(&article.id) != Some(&-1))

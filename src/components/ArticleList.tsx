@@ -9,9 +9,17 @@ interface Props {
   title: string;
   onSelect: (article: Article) => void;
   onMarkAllRead?: () => void;
+  showSummaryStatus?: boolean;
 }
 
-export function ArticleList({ articles, selectedId, title, onSelect, onMarkAllRead }: Props) {
+export function ArticleList({
+  articles,
+  selectedId,
+  title,
+  onSelect,
+  onMarkAllRead,
+  showSummaryStatus = false,
+}: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -66,13 +74,30 @@ export function ArticleList({ articles, selectedId, title, onSelect, onMarkAllRe
                 <div className="article-row-top">
                   {!a.read && <span className="unread-dot" />}
                   <span className="article-row-feed">{a.feed_title}</span>
+                  {showSummaryStatus && a.ai_summary_status && (
+                    <span className={`summary-job-status ${a.ai_summary_status}`}>
+                      {a.ai_summary_status === "queued"
+                        ? "待機中"
+                        : a.ai_summary_status === "running"
+                          ? "生成中"
+                          : a.ai_summary_status === "failed"
+                            ? "失敗"
+                            : a.ai_summary_reviewed
+                              ? "確認済み"
+                              : "新着"}
+                    </span>
+                  )}
                   <span className="article-row-time">{relativeTime(a.published_at)}</span>
                 </div>
                 <div className="article-row-title">
                   {a.starred && <span className="star">★ </span>}
                   {a.title || "(無題)"}
                 </div>
-                {a.summary && <div className="article-row-summary">{a.summary}</div>}
+                {(showSummaryStatus ? a.ai_summary || a.summary : a.summary) && (
+                  <div className="article-row-summary">
+                    {showSummaryStatus ? a.ai_summary || a.summary : a.summary}
+                  </div>
+                )}
               </div>
             );
           })}

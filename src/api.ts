@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Article, Feed, HnItem, Selection } from "./types";
+import type { Article, Feed, HnItem, Selection, SummaryStats } from "./types";
 
 export const listFeeds = () => invoke<Feed[]>("list_feeds");
 
@@ -9,6 +9,7 @@ export const listArticles = (sel: Selection) =>
     category: sel.kind === "category" ? sel.category : null,
     unreadOnly: sel.kind === "unread",
     starredOnly: sel.kind === "starred",
+    summarizedOnly: sel.kind === "summaries",
   });
 
 export const fuzzySearch = (query: string) =>
@@ -19,6 +20,14 @@ export const getArticle = (articleId: number) =>
 
 export const summarizeArticle = (articleId: number, force = false) =>
   invoke<Article>("summarize_article", { articleId, force });
+
+export const enqueueArticleSummary = (articleId: number, force = false) =>
+  invoke<Article>("enqueue_article_summary", { articleId, force });
+
+export const getSummaryStats = () => invoke<SummaryStats>("get_summary_stats");
+
+export const markSummaryReviewed = (articleId: number) =>
+  invoke<void>("mark_summary_reviewed", { articleId });
 
 export const getSetting = (key: string) =>
   invoke<string | null>("get_setting", { key });

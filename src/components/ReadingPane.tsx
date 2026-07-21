@@ -23,24 +23,22 @@ export function ReadingPane({
   onAskAi,
   onFindRelated,
 }: Props) {
-  const [summarizing, setSummarizing] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
   useEffect(() => {
-    setSummarizing(false);
     setSummaryError(null);
   }, [article?.id]);
 
+  const summaryPending =
+    article?.ai_summary_status === "queued" || article?.ai_summary_status === "running";
+
   const generateSummary = async (force: boolean) => {
-    if (!article || summarizing) return;
-    setSummarizing(true);
+    if (!article || summaryPending) return;
     setSummaryError(null);
     try {
       await onSummarize(article, force);
     } catch (e) {
       setSummaryError(String(e));
-    } finally {
-      setSummarizing(false);
     }
   };
 
@@ -162,8 +160,8 @@ export function ReadingPane({
             <>
               <div className="article-ai-summary-header">
                 <span>✦ AI要約</span>
-                <button onClick={() => generateSummary(true)} disabled={summarizing}>
-                  {summarizing ? "再生成中…" : "再生成"}
+                <button onClick={() => generateSummary(true)} disabled={summaryPending}>
+                  {summaryPending ? "再生成中…" : "再生成"}
                 </button>
               </div>
               <MarkdownContent
@@ -177,13 +175,21 @@ export function ReadingPane({
           ) : (
             <button
               className="article-ai-summary-generate"
-              onClick={() => generateSummary(false)}
-              disabled={summarizing}
+              onClick={() => generateSummary(article.ai_summary_status === "failed")}
+              disabled={summaryPending}
             >
-              {summarizing ? "元記事を取得して要約しています…" : "✦ AI要約を生成"}
+              {summaryPending
+                ? "✦ 要約中（AI要約タブで確認できます）"
+                : article.ai_summary_status === "failed"
+                  ? "✦ 要約を再試行"
+                  : "✦ AI要約を生成"}
             </button>
           )}
-          {summaryError && <div className="article-ai-summary-error">{summaryError}</div>}
+          {(summaryError || article.ai_summary_error) && (
+            <div className="article-ai-summary-error">
+              {summaryError || article.ai_summary_error}
+            </div>
+          )}
         </section>
         {html ? (
           <div

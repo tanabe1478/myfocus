@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import type { Feed, SavedSearch, Selection } from "../types";
+import type { Feed, SavedSearch, Selection, SummaryStats } from "../types";
 import { openSettings } from "../api";
 
 const COLLAPSED_KEY = "myfocus.collapsedCategories";
@@ -17,6 +17,7 @@ interface Props {
   selection: Selection;
   savedSearches: SavedSearch[];
   totalUnread: number;
+  summaryStats: SummaryStats;
   refreshing: boolean;
   onSelect: (sel: Selection) => void;
   onRemoveSavedSearch: (searchId: string) => void;
@@ -32,6 +33,7 @@ export function Sidebar({
   selection,
   savedSearches,
   totalUnread,
+  summaryStats,
   refreshing,
   onSelect,
   onRemoveSavedSearch,
@@ -133,6 +135,7 @@ export function Sidebar({
       <nav className="smart-list">
         <SidebarRow
           label="すべて"
+          testId="all-articles"
           selected={isSelected({ kind: "all" })}
           onClick={() => onSelect({ kind: "all" })}
         />
@@ -146,6 +149,14 @@ export function Sidebar({
           label="スター付き"
           selected={isSelected({ kind: "starred" })}
           onClick={() => onSelect({ kind: "starred" })}
+        />
+        <SidebarRow
+          label={summaryStats.pending > 0 ? `✦ AI要約（${summaryStats.pending}件生成中）` : "✦ AI要約"}
+          count={summaryStats.unreviewed}
+          error={summaryStats.failed > 0 ? `${summaryStats.failed}件の生成に失敗しました` : null}
+          selected={isSelected({ kind: "summaries" })}
+          testId="summary-inbox"
+          onClick={() => onSelect({ kind: "summaries" })}
         />
         <SidebarRow
           label="✦ 今日のブリーフィング"

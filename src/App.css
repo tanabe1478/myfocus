@@ -337,6 +337,27 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
+.summary-job-status {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+}
+
+.summary-job-status.running,
+.summary-job-status.queued {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.summary-job-status.failed {
+  color: #c0392b;
+}
+
+.summary-job-status.completed {
+  color: var(--text-secondary);
+}
+
 .article-row-title {
   font-weight: 600;
   font-size: 13px;
@@ -700,6 +721,21 @@ textarea {
 
 .ai-fab:hover {
   background: var(--bg-hover);
+}
+
+.summary-queue-notice {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 60;
+  max-width: 360px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-list);
+  box-shadow: 0 3px 16px rgba(30, 25, 20, 0.18);
+  color: var(--text);
+  font-size: 12px;
 }
 
 .ai-cache-badge {

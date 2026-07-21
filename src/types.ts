@@ -22,6 +22,9 @@ export interface Article {
   full_text: string | null;
   ai_summary: string | null;
   ai_summary_model: string | null;
+  ai_summary_status: "queued" | "running" | "completed" | "failed" | null;
+  ai_summary_error: string | null;
+  ai_summary_reviewed: boolean;
   published_at: number | null;
   read: boolean;
   starred: boolean;
@@ -50,10 +53,17 @@ export type Selection =
   | { kind: "all" }
   | { kind: "unread" }
   | { kind: "starred" }
+  | { kind: "summaries" }
   | { kind: "feed"; feedId: number }
   | { kind: "category"; category: string }
   | { kind: "search"; searchId: string; name: string; query: string }
   | { kind: "hn" };
+
+export interface SummaryStats {
+  pending: number;
+  unreviewed: number;
+  failed: number;
+}
 
 export interface SavedSearch {
   id: string;
