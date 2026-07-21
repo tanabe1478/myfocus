@@ -171,7 +171,7 @@ export function applyCachedTheme(): void {
 }
 
 export async function loadThemeCatalog(): Promise<ThemeDefinition[]> {
-  const raw = await getSetting(CUSTOM_THEMES_SETTING_KEY).catch(() => null);
+  const raw = await getSetting(CUSTOM_THEMES_SETTING_KEY);
   if (raw) localStorage.setItem(CUSTOM_THEMES_CACHE_KEY, raw);
   else localStorage.removeItem(CUSTOM_THEMES_CACHE_KEY);
   return [...BUILTIN_THEMES, ...parseCustomThemes(raw)];
@@ -183,7 +183,7 @@ export async function loadAndApplyTheme(force = false): Promise<{
 }> {
   const generation = applyGeneration;
   const [id, catalog] = await Promise.all([
-    getSetting(THEME_SETTING_KEY).catch(() => null),
+    getSetting(THEME_SETTING_KEY),
     loadThemeCatalog(),
   ]);
   const theme = catalog.find((candidate) => candidate.id === id) ?? BUILTIN_THEMES[0];
@@ -210,19 +210,28 @@ export async function saveCustomThemes(themes: ThemeDefinition[]): Promise<void>
 /** Apply cached colors synchronously, then follow DB changes from any window. */
 export function initializeThemeSync(): void {
   applyCachedTheme();
-  void loadAndApplyTheme(true);
+
+  const syncFromDatabase = (retries = 4) => {
+    void loadAndApplyTheme(true).catch(() => {
+      // On native startup the WebView can execute before Tauri's invoke bridge
+      // is ready. Do not interpret that transient failure as a light theme.
+      if (retries > 0) {
+        window.setTimeout(() => syncFromDatabase(retries - 1), 150);
+      }
+    });
+  };
+
+  syncFromDatabase();
   void listen<string>("settings-updated", (event) => {
     if (event.payload === THEME_SETTING_KEY || event.payload === CUSTOM_THEMES_SETTING_KEY) {
-      void loadAndApplyTheme(true);
+      syncFromDatabase();
     }
   });
 
   // Native window focus changes are a reliable synchronization boundary even
   // when a platform drops an event while another WebView is hidden.
-  window.addEventListener("focus", () => {
-    void loadAndApplyTheme(true);
-  });
+  window.addEventListener("focus", () => syncFromDatabase());
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") void loadAndApplyTheme(true);
+    if (document.visibilityState === "visible") syncFromDatabase();
   });
 }

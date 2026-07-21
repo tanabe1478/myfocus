@@ -73,6 +73,15 @@ describe("settings window", () => {
         (await browser.execute(() => document.documentElement.dataset.theme)) === "warm-dark",
       { timeoutMsg: "main window did not resync its theme on focus" }
     );
+
+    // A stale per-WebView cache must be corrected from SQLite on startup.
+    await browser.execute(() => localStorage.setItem("myfocus.theme", "warm-light"));
+    await browser.refresh();
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(() => document.documentElement.dataset.theme)) === "warm-dark",
+      { timeoutMsg: "main window did not restore the persisted theme after reload" }
+    );
     await browser.switchToWindow(settingsHandle!);
 
     await $('button=複製して編集').click();
