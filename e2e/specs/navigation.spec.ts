@@ -17,6 +17,16 @@ describe("main window keyboard and search flows", () => {
       expect.stringContaining("selected")
     );
 
+    // A background update must not remove an item just read from the current
+    // unread-list session.
+    await browser.tauri.execute(({ core }) =>
+      core.invoke("mark_summary_reviewed", { articleId: 1001 })
+    );
+    await expect($('[data-testid="article-1001"]')).toExist();
+    await expect($('[data-testid="article-1001"]')).toHaveElementClass(
+      expect.stringContaining("selected")
+    );
+
     await press("j");
     await expect($('[data-testid="article-1002"]')).toHaveElementClass(
       expect.stringContaining("selected")

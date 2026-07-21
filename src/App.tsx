@@ -37,7 +37,19 @@ export default function App() {
 
   // feeds-updated ハンドラから最新の選択記事を参照するための ref
   const selectedRef = useRef<Article | null>(null);
+  const retainedUnreadIds = useRef<Set<number>>(new Set());
+  const previousSelectionKey = useRef(JSON.stringify(selection));
   selectedRef.current = selected;
+
+  // Reading an item updates its unread state immediately, but the current
+  // unread list remains a stable session until the user leaves that view.
+  useEffect(() => {
+    const key = JSON.stringify(selection);
+    if (key !== previousSelectionKey.current) {
+      retainedUnreadIds.current.clear();
+      previousSelectionKey.current = key;
+    }
+  }, [selection]);
 
   const pi = usePi();
 
@@ -96,7 +108,16 @@ export default function App() {
       selection.kind === "search"
         ? await api.fuzzySearch(selection.query)
         : await api.listArticles(selection);
-    setArticles(next);
+    setArticles((current) => {
+      if (selection.kind !== "unread" || retainedUnreadIds.current.size === 0) return next;
+      const nextIds = new Set(next.map((article) => article.id));
+      const retained = current.filter(
+        (article) => retainedUnreadIds.current.has(article.id) && !nextIds.has(article.id)
+      );
+      return [...next, ...retained].sort(
+        (a, b) => (b.published_at ?? 0) - (a.published_at ?? 0) || b.id - a.id
+      );
+    });
   }, [selection]);
 
   useEffect(() => {
@@ -122,7 +143,7 @@ export default function App() {
   useEffect(() => {
     const unlisten = listen<number>("summary-jobs-updated", (event) => {
       api.getSummaryStats().then(setSummaryStats).catch(() => {});
-      if (selection.kind === "summaries") reloadArticles();
+      reloadArticles();
       if (selectedRef.current?.id === event.payload) {
         api.getArticle(event.payload)
           .then((article) => {
@@ -138,6 +159,7 @@ export default function App() {
 
   const selectArticle = useCallback((article: Article) => {
     setSelected(article);
+    if (selection.kind === "unread") retainedUnreadIds.current.add(article.id);
     // list rows omit content_html; load the full article for the reading pane
     api
       .getArticle(article.id)
@@ -247,6 +269,7 @@ export default function App() {
       selection.kind === "feed" ? selection.feedId : null,
       selection.kind === "category" ? selection.category : null
     );
+    retainedUnreadIds.current.clear();
     await reloadFeeds();
     await reloadArticles();
   }, [selection, reloadFeeds, reloadArticles]);
@@ -339,6 +362,10 @@ export default function App() {
 
   const toggleRead = useCallback((article: Article) => {
     const read = !article.read;
+    if (selection.kind === "unread") {
+      if (read) retainedUnreadIds.current.add(article.id);
+      else retainedUnreadIds.current.delete(article.id);
+    }
     api.markRead(article.id, read);
     setSelected((cur) => (cur?.id === article.id ? { ...cur, read } : cur));
     setArticles((list) => list.map((a) => (a.id === article.id ? { ...a, read } : a)));
@@ -349,7 +376,7 @@ export default function App() {
           : f
       )
     );
-  }, []);
+  }, [selection.kind]);
 
   const summarizeArticle = useCallback(async (article: Article, force: boolean) => {
     const updated = await api.enqueueArticleSummary(article.id, force);
@@ -462,6 +489,7 @@ export default function App() {
         summaryStats={summaryStats}
         refreshing={refreshing}
         onSelect={(next) => {
+          if (next.kind === "unread") retainedUnreadIds.current.clear();
           setSelection(next);
           setSelected(null);
         }}
