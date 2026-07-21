@@ -177,7 +177,7 @@ export async function loadThemeCatalog(): Promise<ThemeDefinition[]> {
   return [...BUILTIN_THEMES, ...parseCustomThemes(raw)];
 }
 
-export async function loadAndApplyTheme(): Promise<{
+export async function loadAndApplyTheme(force = false): Promise<{
   theme: ThemeDefinition;
   catalog: ThemeDefinition[];
 }> {
@@ -187,8 +187,10 @@ export async function loadAndApplyTheme(): Promise<{
     loadThemeCatalog(),
   ]);
   const theme = catalog.find((candidate) => candidate.id === id) ?? BUILTIN_THEMES[0];
-  // Do not let an older async DB read overwrite a theme the user just chose.
-  if (generation === applyGeneration) applyById(theme.id, catalog);
+  // Preview changes protect themselves from an older async read. Explicit
+  // synchronization points (startup, focus and cross-window events) treat the
+  // SQLite setting as authoritative so windows cannot remain out of sync.
+  if (force || generation === applyGeneration) applyById(theme.id, catalog);
   return { theme, catalog };
 }
 
@@ -208,10 +210,19 @@ export async function saveCustomThemes(themes: ThemeDefinition[]): Promise<void>
 /** Apply cached colors synchronously, then follow DB changes from any window. */
 export function initializeThemeSync(): void {
   applyCachedTheme();
-  void loadAndApplyTheme();
+  void loadAndApplyTheme(true);
   void listen<string>("settings-updated", (event) => {
     if (event.payload === THEME_SETTING_KEY || event.payload === CUSTOM_THEMES_SETTING_KEY) {
-      void loadAndApplyTheme();
+      void loadAndApplyTheme(true);
     }
+  });
+
+  // Native window focus changes are a reliable synchronization boundary even
+  // when a platform drops an event while another WebView is hidden.
+  window.addEventListener("focus", () => {
+    void loadAndApplyTheme(true);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void loadAndApplyTheme(true);
   });
 }

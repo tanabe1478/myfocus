@@ -61,6 +61,18 @@ describe("settings window", () => {
     await expect(browser.execute(() => document.documentElement.dataset.theme)).resolves.toBe(
       "warm-dark"
     );
+
+    // Focus is a fallback synchronization boundary when a native WebView drops
+    // the cross-window settings event.
+    await browser.execute(() => {
+      document.documentElement.dataset.theme = "warm-light";
+      window.dispatchEvent(new Event("focus"));
+    });
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(() => document.documentElement.dataset.theme)) === "warm-dark",
+      { timeoutMsg: "main window did not resync its theme on focus" }
+    );
     await browser.switchToWindow(settingsHandle!);
 
     await $('button=複製して編集').click();
