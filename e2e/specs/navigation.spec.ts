@@ -15,23 +15,35 @@ describe("main window keyboard and search flows", () => {
     const sidebar = await $(".sidebar");
     const sidebarResizer = await $('[data-testid="sidebar-resizer"]');
     const sidebarBefore = (await sidebar.getSize()).width;
+    const sidebarMin = Number(await sidebarResizer.getAttribute("aria-valuemin"));
+    const sidebarMax = Number(await sidebarResizer.getAttribute("aria-valuemax"));
+    const sidebarDelta = sidebarMax >= sidebarBefore + 10 ? 10 : -10;
+    const sidebarExpected = Math.round(
+      Math.min(Math.max(sidebarMax, sidebarMin), Math.max(sidebarMin, sidebarBefore + sidebarDelta))
+    );
     await sidebarResizer.click();
-    await press("ArrowRight");
-    await browser.waitUntil(async () => (await sidebar.getSize()).width >= sidebarBefore + 9);
+    await press(sidebarDelta > 0 ? "ArrowRight" : "ArrowLeft");
+    await browser.waitUntil(async () => (await sidebar.getSize()).width === sidebarExpected);
 
     const articleList = await $(".article-list");
     const articleResizer = await $('[data-testid="article-list-resizer"]');
     const articleBefore = (await articleList.getSize()).width;
+    const articleMin = Number(await articleResizer.getAttribute("aria-valuemin"));
+    const articleMax = Number(await articleResizer.getAttribute("aria-valuemax"));
+    const articleDelta = articleMax >= articleBefore + 10 ? 10 : -10;
+    const articleExpected = Math.round(
+      Math.min(Math.max(articleMax, articleMin), Math.max(articleMin, articleBefore + articleDelta))
+    );
     await articleResizer.click();
-    await press("ArrowRight");
-    await browser.waitUntil(async () => (await articleList.getSize()).width >= articleBefore + 9);
+    await press(articleDelta > 0 ? "ArrowRight" : "ArrowLeft");
+    await browser.waitUntil(async () => (await articleList.getSize()).width === articleExpected);
 
     const saved = await browser.execute(() => ({
       sidebar: Number(localStorage.getItem("myfocus.sidebarWidth")),
       articles: Number(localStorage.getItem("myfocus.articleListWidth")),
     }));
-    expect(saved.sidebar).toBeGreaterThanOrEqual(sidebarBefore + 9);
-    expect(saved.articles).toBeGreaterThanOrEqual(articleBefore + 9);
+    expect(saved.sidebar).toBe(sidebarExpected);
+    expect(saved.articles).toBe(articleExpected);
 
     await browser.refresh();
     await $('[data-testid="article-1001"]').waitForDisplayed();
