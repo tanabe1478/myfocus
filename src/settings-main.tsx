@@ -2,8 +2,10 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { SettingsWindow } from "./components/SettingsWindow";
 import { initializeThemeSync } from "./theme";
+import { initializeDiagnostics } from "./diagnostics";
 
 initializeThemeSync();
+initializeDiagnostics("settings");
 
 if (import.meta.env.MODE === "e2e") void import("@wdio/tauri-plugin");
 

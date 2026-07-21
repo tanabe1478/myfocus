@@ -1,4 +1,5 @@
 mod db;
+mod diagnostics;
 mod digest;
 mod fetcher;
 mod hn;
@@ -6,6 +7,7 @@ mod pi_bridge;
 mod tool_cli;
 
 use db::{Article, Feed};
+use diagnostics::{DiagnosticInfo, DiagnosticLogger};
 use pi_bridge::PiBridge;
 use rusqlite::Connection;
 use serde::Serialize;
@@ -17,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub(crate) struct AppState {
     pub(crate) db: Mutex<Connection>,
     pub(crate) client: reqwest::Client,
+    pub(crate) diagnostics: DiagnosticLogger,
     pi: PiBridge,
 }
 
@@ -159,9 +162,62 @@ fn set_setting(
     key: String,
     value: String,
 ) -> Result<(), String> {
-    let conn = lock_db(&state)?;
-    db::set_setting(&conn, &key, &value).map_err(|e| e.to_string())?;
+    {
+        let conn = lock_db(&state)?;
+        db::set_setting(&conn, &key, &value).map_err(|e| e.to_string())?;
+    }
+    if key == "diagnostic_logging_enabled" {
+        state.diagnostics.set_enabled(value == "true");
+    }
+    state.diagnostics.log(
+        "info",
+        "setting_updated",
+        Some(serde_json::json!({ "key": key })),
+    );
     let _ = app.emit("settings-updated", &key);
+    Ok(())
+}
+
+#[tauri::command]
+fn diagnostic_log(
+    state: State<AppState>,
+    level: String,
+    event: String,
+    details: Option<serde_json::Value>,
+) -> Result<(), String> {
+    if event.trim().is_empty() {
+        return Err("ログイベント名が空です".to_string());
+    }
+    state.diagnostics.log(&level, &event, details);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_diagnostic_info(state: State<AppState>) -> DiagnosticInfo {
+    state.diagnostics.info()
+}
+
+#[tauri::command]
+fn clear_diagnostic_logs(state: State<AppState>) -> Result<(), String> {
+    state.diagnostics.clear().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_diagnostic_folder(state: State<AppState>) -> Result<(), String> {
+    let directory = state.diagnostics.directory();
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("explorer.exe")
+        .arg(directory)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg(directory)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    return Err("この機能はmacOSとWindowsのみ対応です".to_string());
     Ok(())
 }
 
@@ -413,6 +469,15 @@ async fn refresh_all_inner(app: &AppHandle) -> Result<RefreshResult, String> {
         db::set_setting(&conn, "ai_recommendation_cache", "").map_err(|e| e.to_string())?;
         let _ = app.emit("recommendation-cache-invalidated", new_articles);
     }
+    state.diagnostics.log(
+        if failed.is_empty() { "info" } else { "warn" },
+        "feeds_refreshed",
+        Some(serde_json::json!({
+            "feedCount": feeds.len(),
+            "newArticles": new_articles,
+            "failedCount": failed.len(),
+        })),
+    );
     Ok(RefreshResult {
         new_articles,
         failed,
@@ -617,7 +682,19 @@ fn run_cleanup(app: &AppHandle) {
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(DEFAULT_RETENTION_DAYS);
     if days > 0 {
-        let _ = db::cleanup_old_articles(&conn, days);
+        match db::cleanup_old_articles(&conn, days) {
+            Ok(deleted) if deleted > 0 => state.diagnostics.log(
+                "info",
+                "article_cleanup_completed",
+                Some(serde_json::json!({ "deleted": deleted, "retentionDays": days })),
+            ),
+            Ok(_) => {}
+            Err(error) => state.diagnostics.log(
+                "error",
+                "article_cleanup_failed",
+                Some(serde_json::json!({ "message": error.to_string() })),
+            ),
+        }
     }
 }
 
@@ -644,6 +721,14 @@ pub fn run() {
             let conn = db::open(&db_path)?;
             digest::init(&conn)?;
             hn::init(&conn)?;
+            let logging_enabled =
+                db::get_setting(&conn, "diagnostic_logging_enabled")?.as_deref() == Some("true");
+            let diagnostics = DiagnosticLogger::new(data_dir.join("logs"), logging_enabled);
+            diagnostics.log(
+                "info",
+                "app_started",
+                Some(serde_json::json!({ "e2e": std::env::var_os("MYFOCUS_E2E").is_some() })),
+            );
 
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -652,6 +737,7 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
                 client,
+                diagnostics,
                 pi: PiBridge::new(db_path, std::env::current_exe()?),
             });
 
@@ -691,6 +777,10 @@ pub fn run() {
             get_setting,
             seed_e2e_data,
             set_setting,
+            diagnostic_log,
+            get_diagnostic_info,
+            clear_diagnostic_logs,
+            open_diagnostic_folder,
             list_ai_feedback,
             set_ai_feedback,
             open_settings,

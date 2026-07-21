@@ -26,6 +26,17 @@ export const getSetting = (key: string) =>
 export const setSetting = (key: string, value: string) =>
   invoke<void>("set_setting", { key, value });
 
+export interface DiagnosticInfo {
+  enabled: boolean;
+  directory: string;
+  file: string;
+  sizeBytes: number;
+}
+
+export const getDiagnosticInfo = () => invoke<DiagnosticInfo>("get_diagnostic_info");
+export const clearDiagnosticLogs = () => invoke<void>("clear_diagnostic_logs");
+export const openDiagnosticFolder = () => invoke<void>("open_diagnostic_folder");
+
 export const listAiFeedback = () =>
   invoke<Record<string, number>>("list_ai_feedback");
 

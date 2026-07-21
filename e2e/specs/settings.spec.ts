@@ -103,6 +103,32 @@ describe("settings window", () => {
     await expect(retention).toHaveValue("91");
   });
 
+  it("toggles diagnostic logging and writes a local record", async () => {
+    const toggle = await $('[data-testid="diagnostic-logging-toggle"]');
+    await toggle.waitForDisplayed();
+    if (await toggle.isSelected()) await toggle.click();
+    await toggle.click();
+    await expect(toggle).toBeSelected();
+    await expect(
+      browser.tauri.execute(({ core }) =>
+        core.invoke<string>("get_setting", { key: "diagnostic_logging_enabled" })
+      )
+    ).resolves.toBe("true");
+    await browser.tauri.execute(({ core }) =>
+      core.invoke("diagnostic_log", {
+        level: "info",
+        event: "e2e_diagnostic_record",
+        details: { source: "settings_spec" },
+      })
+    );
+    const info = await browser.tauri.execute(({ core }) =>
+      core.invoke<{ sizeBytes: number }>("get_diagnostic_info")
+    );
+    expect(info.sizeBytes).toBeGreaterThan(0);
+    await toggle.click();
+    await expect(toggle).not.toBeSelected();
+  });
+
   it("exposes both native window labels", async () => {
     await expect(browser.tauri.listWindows()).resolves.toEqual(
       expect.arrayContaining(["main", "settings"])

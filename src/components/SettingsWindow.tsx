@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { closeSettings, getSetting, listPiModels, setSetting } from "../api";
+import {
+  clearDiagnosticLogs,
+  closeSettings,
+  getDiagnosticInfo,
+  getSetting,
+  listPiModels,
+  openDiagnosticFolder,
+  setSetting,
+  type DiagnosticInfo,
+} from "../api";
 import {
   BUILTIN_THEMES,
   applyTheme,
@@ -27,6 +36,8 @@ export function SettingsWindow() {
   const [shortcuts, setShortcuts] = useState<KeyboardShortcuts>(DEFAULT_SHORTCUTS);
   const [themeId, setThemeId] = useState(BUILTIN_THEMES[0].id);
   const [themes, setThemes] = useState<ThemeDefinition[]>(BUILTIN_THEMES);
+  const [loggingEnabled, setLoggingEnabled] = useState(false);
+  const [diagnosticInfo, setDiagnosticInfo] = useState<DiagnosticInfo | null>(null);
   const themeIdRef = useRef(BUILTIN_THEMES[0].id);
   const themeTouched = useRef(false);
   const [note, setNote] = useState<string | null>(null);
@@ -36,6 +47,8 @@ export function SettingsWindow() {
     getSetting("translate_model").then((v) => setModel(v || DEFAULT_TRANSLATE_MODEL));
     getSetting("summary_model").then((v) => setSummaryModel(v || DEFAULT_TRANSLATE_MODEL));
     getSetting("keyboard_shortcuts").then((v) => setShortcuts(parseShortcuts(v)));
+    getSetting("diagnostic_logging_enabled").then((v) => setLoggingEnabled(v === "true"));
+    getDiagnosticInfo().then(setDiagnosticInfo).catch(() => {});
     loadAndApplyTheme().then(({ theme, catalog }) => {
       if (!themeTouched.current) {
         themeIdRef.current = theme.id;
@@ -176,6 +189,73 @@ export function SettingsWindow() {
           </select>
           <div className="settings-hint">
             Hacker Newsの新しい翻訳・要約から適用されます。既存の生成結果は保持されます。
+          </div>
+        </section>
+
+        <section className="settings-section" data-testid="diagnostic-settings">
+          <div className="settings-title">ドッグフーディング診断ログ</div>
+          <label className="settings-toggle-row">
+            <span>
+              <strong>ロギングモード</strong>
+              <span className="settings-hint">
+                アプリの動作、フィード更新結果、フロントエンドエラーをローカルへ記録します。
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              data-testid="diagnostic-logging-toggle"
+              checked={loggingEnabled}
+              onChange={async (event) => {
+                const next = event.target.checked;
+                setLoggingEnabled(next);
+                try {
+                  await setSetting("diagnostic_logging_enabled", String(next));
+                  setDiagnosticInfo(await getDiagnosticInfo());
+                  setNote(next ? "診断ログを有効にしました" : "診断ログを無効にしました");
+                } catch (error) {
+                  setLoggingEnabled(!next);
+                  setNote(`診断ログ設定を変更できませんでした: ${error}`);
+                }
+              }}
+            />
+          </label>
+          <div className="settings-hint diagnostic-privacy-note">
+            記事本文やAIプロンプトは記録しません。ログは5MBでローテーションし、直前の1世代を保持します。
+          </div>
+          {diagnosticInfo && (
+            <div className="diagnostic-log-info">
+              <code title={diagnosticInfo.file}>{diagnosticInfo.file}</code>
+              <span>{(diagnosticInfo.sizeBytes / 1024).toFixed(1)} KB</span>
+            </div>
+          )}
+          <div className="diagnostic-actions">
+            <button
+              className="settings-reset"
+              data-testid="open-diagnostic-folder"
+              onClick={() =>
+                openDiagnosticFolder().catch((error) =>
+                  setNote(`ログフォルダーを開けませんでした: ${error}`),
+                )
+              }
+            >
+              ログフォルダーを開く
+            </button>
+            <button
+              className="settings-reset"
+              data-testid="clear-diagnostic-logs"
+              onClick={async () => {
+                try {
+                  await clearDiagnosticLogs();
+                  setDiagnosticInfo(await getDiagnosticInfo());
+                  setNote("診断ログを削除しました");
+                } catch (error) {
+                  setNote(`診断ログを削除できませんでした: ${error}`);
+                }
+              }}
+            >
+              ログを削除
+            </button>
           </div>
         </section>
 
