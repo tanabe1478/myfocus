@@ -21,8 +21,10 @@ interface Props {
   refreshing: boolean;
   onSelect: (sel: Selection) => void;
   onRemoveSavedSearch: (searchId: string) => void;
-  onAddFeed: (url: string) => Promise<void>;
+  onAddFeed: (url: string, category: string | null) => Promise<void>;
   onRemoveFeed: (feedId: number) => void;
+  onSetFeedCategory: (feedId: number, category: string | null) => Promise<void>;
+  onRenameCategory: (oldName: string, newName: string) => Promise<void>;
   onRefresh: () => void;
   onOpenBriefing: () => void;
   onImportOpml: (content: string) => Promise<number>;
@@ -39,12 +41,16 @@ export function Sidebar({
   onRemoveSavedSearch,
   onAddFeed,
   onRemoveFeed,
+  onSetFeedCategory,
+  onRenameCategory,
   onRefresh,
   onOpenBriefing,
   onImportOpml,
 }: Props) {
   const [adding, setAdding] = useState(false);
   const [url, setUrl] = useState("");
+  const [newFeedCategory, setNewFeedCategory] = useState("");
+  const [dragTarget, setDragTarget] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importNote, setImportNote] = useState<string | null>(null);
@@ -65,6 +71,7 @@ export function Sidebar({
     }
     return { uncategorized, byCategory };
   }, [feeds]);
+  const categories = useMemo(() => [...groups.byCategory.keys()], [groups]);
 
   const toggleCollapse = (category: string) => {
     setCollapsed((prev) => {
@@ -98,14 +105,34 @@ export function Sidebar({
     setBusy(true);
     setError(null);
     try {
-      await onAddFeed(trimmed);
+      await onAddFeed(trimmed, newFeedCategory.trim() || null);
       setUrl("");
+      setNewFeedCategory("");
       setAdding(false);
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(false);
     }
+  };
+
+  const moveFeed = async (feedId: number, category: string | null) => {
+    try {
+      await onSetFeedCategory(feedId, category);
+    } catch (e) {
+      setImportNote(`カテゴリ変更失敗: ${e}`);
+    } finally {
+      setDragTarget(null);
+    }
+  };
+
+  const editFeedCategory = (feed: Feed) => {
+    const value = window.prompt(
+      "カテゴリ名を入力してください（空欄で未分類）",
+      feed.category ?? ""
+    );
+    if (value == null) return;
+    void moveFeed(feed.id, value.trim() || null);
   };
 
   return (
@@ -200,7 +227,20 @@ export function Sidebar({
         </>
       )}
 
-      <div className="section-label">
+      <div
+        className={`section-label feed-drop-target ${dragTarget === "__uncategorized__" ? "drag-over" : ""}`}
+        data-testid="uncategorized-drop-target"
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragTarget("__uncategorized__");
+        }}
+        onDragLeave={() => setDragTarget(null)}
+        onDrop={(event) => {
+          event.preventDefault();
+          const feedId = Number(event.dataTransfer.getData("text/feed-id"));
+          if (feedId) void moveFeed(feedId, null);
+        }}
+      >
         フィード
         <span>
           <button
@@ -242,6 +282,22 @@ export function Sidebar({
             }}
             disabled={busy}
           />
+          <input
+            list="feed-category-options"
+            placeholder="カテゴリ（任意）"
+            value={newFeedCategory}
+            onChange={(e) => setNewFeedCategory(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submit();
+              if (e.key === "Escape") setAdding(false);
+            }}
+            disabled={busy}
+          />
+          <datalist id="feed-category-options">
+            {categories.map((category) => (
+              <option key={category} value={category} />
+            ))}
+          </datalist>
           {busy && <div className="add-feed-status">取得中…</div>}
           {error && <div className="add-feed-error">{error}</div>}
         </div>
@@ -255,6 +311,7 @@ export function Sidebar({
             isSelected={isSelected}
             onSelect={onSelect}
             onRemoveFeed={onRemoveFeed}
+            onEditCategory={editFeedCategory}
           />
         ))}
         {[...groups.byCategory.entries()].map(([category, list]) => {
@@ -265,9 +322,19 @@ export function Sidebar({
               <div
                 className={`sidebar-row category-row ${
                   isSelected({ kind: "category", category }) ? "selected" : ""
-                }`}
+                } ${dragTarget === category ? "drag-over" : ""}`}
                 data-testid={`category-${category}`}
                 onClick={() => onSelect({ kind: "category", category })}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setDragTarget(category);
+                }}
+                onDragLeave={() => setDragTarget(null)}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const feedId = Number(event.dataTransfer.getData("text/feed-id"));
+                  if (feedId) void moveFeed(feedId, category);
+                }}
               >
                 <button
                   className="icon-button category-toggle"
@@ -282,6 +349,22 @@ export function Sidebar({
                 <span className="sidebar-row-label" title={category}>
                   {category}
                 </span>
+                <button
+                  className="icon-button category-edit"
+                  data-testid={`rename-category-${category}`}
+                  title="カテゴリ名を変更"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    const next = window.prompt("新しいカテゴリ名", category)?.trim();
+                    if (next && next !== category) {
+                      onRenameCategory(category, next).catch((e) =>
+                        setImportNote(`カテゴリ名変更失敗: ${e}`)
+                      );
+                    }
+                  }}
+                >
+                  ✎
+                </button>
                 {unread > 0 && <span className="unread-badge">{unread}</span>}
               </div>
               {!isCollapsed &&
@@ -293,7 +376,8 @@ export function Sidebar({
                     isSelected={isSelected}
                     onSelect={onSelect}
                     onRemoveFeed={onRemoveFeed}
-                          />
+                    onEditCategory={editFeedCategory}
+                  />
                 ))}
             </div>
           );
@@ -312,15 +396,24 @@ function FeedRow({
   isSelected,
   onSelect,
   onRemoveFeed,
+  onEditCategory,
 }: {
   feed: Feed;
   indent?: boolean;
   isSelected: (sel: Selection) => boolean;
   onSelect: (sel: Selection) => void;
   onRemoveFeed: (feedId: number) => void;
+  onEditCategory: (feed: Feed) => void;
 }) {
   return (
-    <div className={indent ? "feed-row-indent" : undefined}>
+    <div
+      className={indent ? "feed-row-indent" : undefined}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/feed-id", String(feed.id));
+      }}
+    >
       <SidebarRow
         label={feed.title || feed.url}
         count={feed.unread_count}
@@ -328,6 +421,7 @@ function FeedRow({
         testId={`feed-${feed.id}`}
         selected={isSelected({ kind: "feed", feedId: feed.id })}
         onClick={() => onSelect({ kind: "feed", feedId: feed.id })}
+        onCategorize={() => onEditCategory(feed)}
         onRemove={() => {
           if (confirm(`「${feed.title}」の購読を解除しますか？記事も削除されます。`)) {
             onRemoveFeed(feed.id);
@@ -345,6 +439,7 @@ function SidebarRow({
   selected,
   onClick,
   onRemove,
+  onCategorize,
   testId,
 }: {
   label: string;
@@ -353,6 +448,7 @@ function SidebarRow({
   selected: boolean;
   onClick: () => void;
   onRemove?: () => void;
+  onCategorize?: () => void;
   testId?: string;
 }) {
   return (
@@ -368,6 +464,19 @@ function SidebarRow({
         <span className="feed-error-badge" title={`取得エラー: ${error}`}>
           ⚠
         </span>
+      )}
+      {onCategorize && (
+        <button
+          className="icon-button row-action"
+          data-testid={testId ? `${testId}-category` : undefined}
+          title="カテゴリを変更"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCategorize();
+          }}
+        >
+          ◫
+        </button>
       )}
       {onRemove && (
         <button

@@ -410,6 +410,51 @@ fn remove_feed(state: State<AppState>, feed_id: i64) -> Result<(), String> {
     db::remove_feed(&conn, feed_id).map_err(|e| e.to_string())
 }
 
+fn normalized_category(value: Option<String>) -> Result<Option<String>, String> {
+    let category = value
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty());
+    if category
+        .as_ref()
+        .is_some_and(|item| item.chars().count() > 100)
+    {
+        return Err("カテゴリ名は100文字以内にしてください".to_string());
+    }
+    Ok(category)
+}
+
+#[tauri::command]
+fn set_feed_category(
+    app: AppHandle,
+    state: State<AppState>,
+    feed_id: i64,
+    category: Option<String>,
+) -> Result<(), String> {
+    let category = normalized_category(category)?;
+    let conn = lock_db(&state)?;
+    db::set_feed_category(&conn, feed_id, category.as_deref()).map_err(|e| e.to_string())?;
+    let _ = app.emit("feeds-updated", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_category(
+    app: AppHandle,
+    state: State<AppState>,
+    old_name: String,
+    new_name: String,
+) -> Result<usize, String> {
+    let old_name = old_name.trim();
+    if old_name.is_empty() {
+        return Err("変更元のカテゴリ名が空です".to_string());
+    }
+    let new_name = normalized_category(Some(new_name))?.ok_or("カテゴリ名が空です")?;
+    let conn = lock_db(&state)?;
+    let changed = db::rename_category(&conn, old_name, &new_name).map_err(|e| e.to_string())?;
+    let _ = app.emit("feeds-updated", ());
+    Ok(changed)
+}
+
 // --- Hacker News（RSSとは独立した情報ソースモジュール） ---
 
 #[tauri::command]
@@ -476,7 +521,8 @@ fn extract_attr(tag: &str, name: &str) -> Option<String> {
 }
 
 #[tauri::command]
-async fn add_feed(app: AppHandle, url: String) -> Result<Feed, String> {
+async fn add_feed(app: AppHandle, url: String, category: Option<String>) -> Result<Feed, String> {
+    let category = normalized_category(category)?;
     let state = app.state::<AppState>();
     let client = state.client.clone();
 
@@ -506,6 +552,7 @@ async fn add_feed(app: AppHandle, url: String) -> Result<Feed, String> {
             fetched.site_url.as_deref(),
         )
         .map_err(|e| e.to_string())?;
+        db::set_feed_category(&conn, feed_id, category.as_deref()).map_err(|e| e.to_string())?;
         db::insert_articles(&mut conn, feed_id, &fetched.articles).map_err(|e| e.to_string())?;
         db::set_setting(&conn, "ai_recommendation_cache", "").map_err(|e| e.to_string())?;
         db::list_feeds(&conn)
@@ -907,6 +954,8 @@ pub fn run() {
             mark_starred,
             mark_all_read,
             remove_feed,
+            set_feed_category,
+            rename_category,
             hn_list,
             hn_refresh,
             hn_summarize_comments,
@@ -988,6 +1037,29 @@ mod tests {
         let article = db::get_article(&conn, rust_id).unwrap();
         assert_eq!(article.ai_summary.as_deref(), Some("AIによる要約"));
         assert_eq!(article.ai_summary_model.as_deref(), Some("provider/model"));
+    }
+
+    #[test]
+    fn feed_categories_can_be_moved_and_renamed() {
+        let conn = test_db();
+        let first = db::upsert_feed(&conn, "https://category.example/one", "One", None).unwrap();
+        let second = db::upsert_feed(&conn, "https://category.example/two", "Two", None).unwrap();
+        db::set_feed_category(&conn, first, Some("Tech")).unwrap();
+        db::set_feed_category(&conn, second, Some("Tech")).unwrap();
+        assert_eq!(
+            db::rename_category(&conn, "Tech", "Engineering").unwrap(),
+            2
+        );
+        let feeds = db::list_feeds(&conn).unwrap();
+        assert!(feeds
+            .iter()
+            .all(|feed| feed.category.as_deref() == Some("Engineering")));
+        db::set_feed_category(&conn, first, None).unwrap();
+        let feeds = db::list_feeds(&conn).unwrap();
+        assert_eq!(
+            feeds.iter().find(|feed| feed.id == first).unwrap().category,
+            None
+        );
     }
 
     #[test]

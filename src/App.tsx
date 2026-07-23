@@ -242,11 +242,30 @@ export default function App() {
   }, [selection.kind]);
 
   const handleAddFeed = useCallback(
-    async (url: string) => {
-      await api.addFeed(url);
+    async (url: string, category: string | null = null) => {
+      await api.addFeed(url, category);
       await reloadFeeds();
     },
     [reloadFeeds]
+  );
+
+  const handleSetFeedCategory = useCallback(
+    async (feedId: number, category: string | null) => {
+      await api.setFeedCategory(feedId, category);
+      await reloadFeeds();
+    },
+    [reloadFeeds]
+  );
+
+  const handleRenameCategory = useCallback(
+    async (oldName: string, newName: string) => {
+      await api.renameCategory(oldName, newName);
+      if (selection.kind === "category" && selection.category === oldName) {
+        setSelection({ kind: "category", category: newName.trim() });
+      }
+      await reloadFeeds();
+    },
+    [reloadFeeds, selection]
   );
 
   const handleRemoveFeed = useCallback(
@@ -545,6 +564,8 @@ export default function App() {
         onRemoveSavedSearch={handleRemoveSavedSearch}
         onAddFeed={handleAddFeed}
         onRemoveFeed={handleRemoveFeed}
+        onSetFeedCategory={handleSetFeedCategory}
+        onRenameCategory={handleRenameCategory}
         onRefresh={handleRefresh}
         onOpenBriefing={() => {
           setAiOpen(true);

@@ -55,7 +55,14 @@ export const setAiFeedback = (articleId: number, value: -1 | 0 | 1) =>
 export const openSettings = () => invoke<void>("open_settings");
 export const closeSettings = () => invoke<void>("close_settings");
 
-export const addFeed = (url: string) => invoke<Feed>("add_feed", { url });
+export const addFeed = (url: string, category: string | null = null) =>
+  invoke<Feed>("add_feed", { url, category });
+
+export const setFeedCategory = (feedId: number, category: string | null) =>
+  invoke<void>("set_feed_category", { feedId, category });
+
+export const renameCategory = (oldName: string, newName: string) =>
+  invoke<number>("rename_category", { oldName, newName });
 
 export const removeFeed = (feedId: number) => invoke<void>("remove_feed", { feedId });
 

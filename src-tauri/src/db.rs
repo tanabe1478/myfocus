@@ -726,6 +726,29 @@ pub fn remove_feed(conn: &Connection, feed_id: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+pub fn set_feed_category(
+    conn: &Connection,
+    feed_id: i64,
+    category: Option<&str>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE feeds SET category = ?1 WHERE id = ?2",
+        params![category, feed_id],
+    )?;
+    Ok(())
+}
+
+pub fn rename_category(
+    conn: &Connection,
+    old_name: &str,
+    new_name: &str,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE feeds SET category = ?1 WHERE category = ?2",
+        params![new_name, old_name],
+    )
+}
+
 /// Register a feed without fetching it yet (OPML import).
 /// New feeds get the given category; existing ones have their category updated.
 pub fn insert_feed_stub(
