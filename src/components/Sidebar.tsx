@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Feed, SavedSearch, Selection, SummaryStats } from "../types";
 import { openSettings } from "../api";
 
@@ -51,6 +52,8 @@ export function Sidebar({
   const [url, setUrl] = useState("");
   const [newFeedCategory, setNewFeedCategory] = useState("");
   const [dragTarget, setDragTarget] = useState<string | null>(null);
+  const [draggedFeedId, setDraggedFeedId] = useState<number | null>(null);
+  const draggedFeedIdRef = useRef<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importNote, setImportNote] = useState<string | null>(null);
@@ -116,6 +119,12 @@ export function Sidebar({
     }
   };
 
+  const categoryAtPoint = (x: number, y: number) => {
+    const element = document.elementFromPoint(x, y) as HTMLElement | null;
+    const target = element?.closest<HTMLElement>("[data-feed-drop-category]");
+    return target?.dataset.feedDropCategory;
+  };
+
   const moveFeed = async (feedId: number, category: string | null) => {
     try {
       await onSetFeedCategory(feedId, category);
@@ -124,6 +133,23 @@ export function Sidebar({
     } finally {
       setDragTarget(null);
     }
+  };
+
+  const finishPointerDrag = (x: number, y: number) => {
+    const feedId = draggedFeedIdRef.current;
+    if (feedId == null) return;
+    const category = categoryAtPoint(x, y);
+    if (category !== undefined) {
+      void moveFeed(feedId, category || null);
+    }
+    draggedFeedIdRef.current = null;
+    setDraggedFeedId(null);
+    setDragTarget(null);
+  };
+
+  const beginPointerDrag = (feedId: number) => {
+    draggedFeedIdRef.current = feedId;
+    setDraggedFeedId(feedId);
   };
 
   const editFeedCategory = (feed: Feed) => {
@@ -136,7 +162,15 @@ export function Sidebar({
   };
 
   return (
-    <aside className="sidebar">
+    <aside
+      className={`sidebar ${draggedFeedId != null ? "feed-dragging" : ""}`}
+      onMouseMove={(event) => {
+        if (draggedFeedIdRef.current == null) return;
+        const category = categoryAtPoint(event.clientX, event.clientY);
+        setDragTarget(category === "" ? "__uncategorized__" : category ?? null);
+      }}
+      onMouseUp={(event) => finishPointerDrag(event.clientX, event.clientY)}
+    >
       <div className="sidebar-header">
         <span className="app-name">myfocus</span>
         <span>
@@ -230,16 +264,7 @@ export function Sidebar({
       <div
         className={`section-label feed-drop-target ${dragTarget === "__uncategorized__" ? "drag-over" : ""}`}
         data-testid="uncategorized-drop-target"
-        onDragOver={(event) => {
-          event.preventDefault();
-          setDragTarget("__uncategorized__");
-        }}
-        onDragLeave={() => setDragTarget(null)}
-        onDrop={(event) => {
-          event.preventDefault();
-          const feedId = Number(event.dataTransfer.getData("text/feed-id"));
-          if (feedId) void moveFeed(feedId, null);
-        }}
+        data-feed-drop-category=""
       >
         フィード
         <span>
@@ -312,6 +337,7 @@ export function Sidebar({
             onSelect={onSelect}
             onRemoveFeed={onRemoveFeed}
             onEditCategory={editFeedCategory}
+            onBeginDrag={beginPointerDrag}
           />
         ))}
         {[...groups.byCategory.entries()].map(([category, list]) => {
@@ -325,16 +351,7 @@ export function Sidebar({
                 } ${dragTarget === category ? "drag-over" : ""}`}
                 data-testid={`category-${category}`}
                 onClick={() => onSelect({ kind: "category", category })}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  setDragTarget(category);
-                }}
-                onDragLeave={() => setDragTarget(null)}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  const feedId = Number(event.dataTransfer.getData("text/feed-id"));
-                  if (feedId) void moveFeed(feedId, category);
-                }}
+                data-feed-drop-category={category}
               >
                 <button
                   className="icon-button category-toggle"
@@ -377,6 +394,7 @@ export function Sidebar({
                     onSelect={onSelect}
                     onRemoveFeed={onRemoveFeed}
                     onEditCategory={editFeedCategory}
+                    onBeginDrag={beginPointerDrag}
                   />
                 ))}
             </div>
@@ -397,6 +415,7 @@ function FeedRow({
   onSelect,
   onRemoveFeed,
   onEditCategory,
+  onBeginDrag,
 }: {
   feed: Feed;
   indent?: boolean;
@@ -404,16 +423,10 @@ function FeedRow({
   onSelect: (sel: Selection) => void;
   onRemoveFeed: (feedId: number) => void;
   onEditCategory: (feed: Feed) => void;
+  onBeginDrag: (feedId: number) => void;
 }) {
   return (
-    <div
-      className={indent ? "feed-row-indent" : undefined}
-      draggable
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/feed-id", String(feed.id));
-      }}
-    >
+    <div className={indent ? "feed-row-indent" : undefined}>
       <SidebarRow
         label={feed.title || feed.url}
         count={feed.unread_count}
@@ -421,6 +434,12 @@ function FeedRow({
         testId={`feed-${feed.id}`}
         selected={isSelected({ kind: "feed", feedId: feed.id })}
         onClick={() => onSelect({ kind: "feed", feedId: feed.id })}
+        onDragMouseDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onBeginDrag(feed.id);
+        }}
         onCategorize={() => onEditCategory(feed)}
         onRemove={() => {
           if (confirm(`「${feed.title}」の購読を解除しますか？記事も削除されます。`)) {
@@ -440,6 +459,7 @@ function SidebarRow({
   onClick,
   onRemove,
   onCategorize,
+  onDragMouseDown,
   testId,
 }: {
   label: string;
@@ -449,6 +469,7 @@ function SidebarRow({
   onClick: () => void;
   onRemove?: () => void;
   onCategorize?: () => void;
+  onDragMouseDown?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   testId?: string;
 }) {
   return (
@@ -457,6 +478,18 @@ function SidebarRow({
       data-testid={testId}
       onClick={onClick}
     >
+      {onDragMouseDown && (
+        <button
+          className="icon-button feed-drag-handle"
+          data-testid={testId ? `${testId}-drag` : undefined}
+          title="ドラッグしてカテゴリを移動"
+          aria-label={`${label}を移動`}
+          onMouseDown={onDragMouseDown}
+          onClick={(event) => event.stopPropagation()}
+        >
+          ⠿
+        </button>
+      )}
       <span className="sidebar-row-label" title={label}>
         {label}
       </span>
